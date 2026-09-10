@@ -1,0 +1,80 @@
+// Граматика Oberih v0.1 (MVP-підмножина)
+// Покриває: resilient fn, модифікатори, let/return, виклики функцій,
+// доступ через крапку (obj.method), оператор "?", Ok/Err.
+
+start: fn_decl+
+
+RESILIENT_KW: "resilient"
+
+fn_decl: RESILIENT_KW? "fn" NAME "(" params? ")" "->" type_expr modifier* "{" block "}"
+
+block: stmt*
+
+params: param ("," param)*
+param: NAME ":" type_expr
+
+type_expr: NAME ("<" type_expr ("," type_expr)* ">")?
+
+modifier: NAME "(" mod_arg ("," mod_arg)* ")"  -> modifier
+        | NAME                                  -> bare_modifier
+
+mod_arg: NAME ":" value   -> named_arg
+       | value             -> positional_arg
+
+value: duration | primary
+
+duration: SIGNED_NUMBER TIME_UNIT
+TIME_UNIT: "ms" | "s" | "m"
+
+?stmt: let_stmt
+     | assign_stmt
+     | return_stmt
+     | expr_stmt
+     | if_stmt
+     | while_stmt
+
+let_stmt: "let" NAME "=" expr
+assign_stmt: NAME "=" expr
+return_stmt: "return" expr
+expr_stmt: expr
+
+if_stmt: "if" "(" expr ")" "{" block "}" ("else" "{" block "}")?
+while_stmt: "while" "(" expr ")" "{" block "}"
+
+?expr: try_expr
+
+?try_expr: comparison "?"   -> try_op
+         | comparison
+
+?comparison: add_expr CMP_OP add_expr   -> comparison
+           | add_expr
+
+CMP_OP: "==" | "!=" | "<=" | ">=" | "<" | ">"
+
+?add_expr: add_expr "+" primary   -> add
+         | primary
+
+?primary: atom postfix*
+
+atom: STRING
+    | SIGNED_NUMBER
+    | BOOL
+    | NAME
+    | "(" expr ")"
+
+BOOL.2: "true" | "false"
+
+postfix: "." NAME "(" args? ")"   -> method_call
+       | "." NAME                 -> field_access
+       | "(" args? ")"            -> call_args
+
+args: expr ("," expr)*
+
+NAME: /[a-zA-Z_][a-zA-Z0-9_]*/
+
+%import common.ESCAPED_STRING -> STRING
+%import common.SIGNED_NUMBER
+%import common.WS
+%import common.CPP_COMMENT
+%ignore WS
+%ignore CPP_COMMENT
