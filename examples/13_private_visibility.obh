@@ -1,9 +1,0 @@
-// Демонстрація private: internalHelper видно лише всередині
-// lib/private_demo_lib.obh, publicApi можна викликати звідусіль.
-
-import "lib/private_demo_lib.obh"
-
-fn main() -> Number {
-    print("Результат через публічний API:", publicApi(10))
-    return 0
-}
