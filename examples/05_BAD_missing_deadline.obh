@@ -1,0 +1,14 @@
+// Навмисна помилка: getPrice - коренева resilient-функція, але без
+// deadline/retryBudget. Компілятор Oberih має відхилити це ДО запуску.
+
+resilient fn getPrice(itemId: String) -> Result<Price, Error>
+    retries(3)
+{
+    return http.get("/prices/" + itemId)
+}
+
+fn main() -> Number {
+    let price = getPrice("item-1")
+    print("Ціна:", price)
+    return 0
+}

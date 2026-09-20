@@ -1,0 +1,11 @@
+// Сценарій: запит погоди із зовнішнього API.
+// Демонструє cache як першу лінію захисту і fallback як другу.
+
+resilient fn getWeather(city: String) -> Result<Weather, ResilienceExhausted>
+    deadline(1s)
+    retryBudget(2)
+    cache(ttl: 300s)                        // свіжий кеш — мережевий виклик не робиться взагалі
+    fallback(lastKnownWeather(city))
+{
+    return weatherApi.get(city)
+}

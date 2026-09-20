@@ -1,0 +1,18 @@
+// Навмисні помилки типів для перевірки typechecker'а.
+
+fn addNumbers(a: Number, b: Number) -> Number {
+    return a + b
+}
+
+fn brokenIf() -> Number {
+    if (5) {
+        return 1
+    }
+    return 0
+}
+
+fn main() -> Number {
+    let result = addNumbers("five", 3)   // рядок замість Number - помилка!
+    print(result)
+    return 0
+}
