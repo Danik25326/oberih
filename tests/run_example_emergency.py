@@ -24,7 +24,7 @@ resilient fn riskyCall(x: String) -> Result<String, Error>
 
 tree = parser.parse(source)
 load_program(tree)
-print("Помилки компіляції:", check_program(evaluator.REGISTRY) + type_check_program(evaluator.REGISTRY) or "немає")
+print("Помилки компіляції:", check_program(evaluator.REGISTRY) + type_check_program(evaluator.REGISTRY, evaluator.STRUCTS) or "немає")
 
 # cachedFallback - невідома функція, викличе виключення при спробі виконати ->
 # симулює ситуацію "навіть fallback провалився"

@@ -21,6 +21,8 @@ TEST_FILES = [
     "run_example_ratelimit.py",
     "run_example_bulkhead.py",
     "run_example_hedging.py",
+    "run_example_lsp.py",
+    "run_example_adaptive.py",
 ]
 
 

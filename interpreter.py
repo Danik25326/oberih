@@ -12,21 +12,17 @@ Oberih Interpreter v0.1 (Фаза 1: tree-walking)
 кількість спроб у ланцюжку викликів, а не є лише ідеєю на папері.
 """
 
-from lark import Lark, Transformer
 import contextvars
 import time
 import concurrent.futures
 import threading
-
-
-# ---------------------------------------------------------------------------
-# Парсер
-# ---------------------------------------------------------------------------
-
-with open("grammar.lark") as f:
-    GRAMMAR = f.read()
-
-parser = Lark(GRAMMAR, parser="lalr", propagate_positions=True)
+import json
+import os
+import sys
+import uuid
+import urllib.request
+import urllib.error
+import datetime
 
 
 # ---------------------------------------------------------------------------
@@ -38,6 +34,50 @@ class ResilienceExhausted(Exception):
     def __init__(self, fn_name):
         super().__init__(f"Resilience budget exhausted in '{fn_name}'")
         self.fn_name = fn_name
+
+
+_INCIDENTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".oberih_incidents")
+
+
+def _write_incident_report(fn_name, budget, last_error):
+    """Автоматичний post-mortem у момент ResilienceExhausted - усі дані вже
+    зібрані під час виконання (бюджет, спроби, спани), просто зберігаємо їх
+    структуровано на диск, замість того щоб вони губились у стеку викликів."""
+    try:
+        os.makedirs(_INCIDENTS_DIR, exist_ok=True)
+        timestamp = datetime.datetime.now().isoformat()
+        report = {
+            "function": fn_name,
+            "timestamp": timestamp,
+            "attempts_made": list(budget.attempts_log) if budget else [],
+            "retries_left_at_failure": budget.retries_left if budget else None,
+            "deadline_remaining_seconds": (
+                round(budget.deadline_at - time.monotonic(), 3) if budget else None
+            ),
+            "last_error": str(last_error) if last_error else None,
+            "recent_trace_spans": _trace_spans[-20:],  # останні спани сесії для контексту
+        }
+        safe_ts = timestamp.replace(":", "-")
+        filename = f"{fn_name}_{safe_ts}.json"
+        path = os.path.join(_INCIDENTS_DIR, filename)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(report, f, ensure_ascii=False, indent=2)
+        return path
+    except Exception:
+        return None  # postmortem не має сам ламати виконання програми
+
+
+def _raise_exhausted(fn_name, budget, last_error):
+    _write_incident_report(fn_name, budget, last_error)
+    raise ResilienceExhausted(fn_name) from last_error
+
+
+def list_recent_incidents(limit=10):
+    """Для CLI/демонстрації - останні збережені post-mortem звіти."""
+    if not os.path.exists(_INCIDENTS_DIR):
+        return []
+    files = sorted(os.listdir(_INCIDENTS_DIR), reverse=True)[:limit]
+    return [os.path.join(_INCIDENTS_DIR, f) for f in files]
 
 
 class NetworkFailure(Exception):
@@ -56,6 +96,123 @@ class TimeoutFailure(NetworkFailure):
 # затримкою може ще довиконатись у фоні - для реального мережевого I/O це
 # природно відповідає тому, як cancel працює у більшості мов).
 _timeout_executor = concurrent.futures.ThreadPoolExecutor(max_workers=16)
+
+
+# ---------------------------------------------------------------------------
+# Durable Execution - журнал на диску переживає навіть перезапуск процесу.
+# Кожен resilient-виклик всередині активного durable workflow автоматично
+# чекпоінтиться: якщо він вже успішно виконався в попередньому "запуску"
+# (навіть якщо процес впав ПІСЛЯ цього кроку), при повторному виклику з тими
+# самими аргументами крок береться з журналу без жодного реального I/O.
+# ---------------------------------------------------------------------------
+
+_JOURNAL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".oberih_journal.json")
+
+
+def _load_journal():
+    if not os.path.exists(_JOURNAL_PATH):
+        return {}
+    try:
+        with open(_JOURNAL_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_journal(journal):
+    with open(_JOURNAL_PATH, "w", encoding="utf-8") as f:
+        json.dump(journal, f, ensure_ascii=False, indent=2)
+
+
+def reset_durable_journal():
+    """Для тестів/демо - очистити журнал (в реальному житті цього не роблять)."""
+    if os.path.exists(_JOURNAL_PATH):
+        os.remove(_JOURNAL_PATH)
+
+
+class WorkflowContext:
+    def __init__(self, workflow_id):
+        self.id = workflow_id
+        self.counter = 0
+
+
+_current_workflow = contextvars.ContextVar("oberih_workflow", default=None)
+
+
+class BudgetExceededError(NetworkFailure):
+    def __init__(self, resource, fn_name):
+        super().__init__(
+            f"Бюджет ресурсу '{resource}' вичерпано під час '{fn_name}' - "
+            f"подальші виклики в цьому ланцюжку заблоковано"
+        )
+
+
+def charge_budget(resource, amount, caller="llm.call"):
+    """Списує amount одиниць ресурсу з АКТИВНОГО бюджету (Shared Budget).
+    Якщо активного обмеження на цей ресурс немає - списання дозволене без
+    перевірки (немає ліміту в цьому контексті). Якщо списання виводить
+    залишок у мінус - кидає BudgetExceededError, блокуючи подальші витрати
+    в межах цього ж ланцюжка викликів."""
+    budget = _current_budget.get()
+    if budget is None or resource not in budget.resources:
+        return
+    budget.resources[resource] -= amount
+    if budget.resources[resource] < 0:
+        raise BudgetExceededError(resource, caller)
+
+
+class MockLLM:
+    """Симулює виклик LLM з умовною вартістю в токенах і грошах -
+    для демонстрації узагальненого бюджету без реального API-ключа."""
+    def __init__(self):
+        self.call_log = []
+
+    def call(self, prompt):
+        self.call_log.append(prompt)
+        tokens = len(prompt) * 5  # умовна модель для демонстрації
+        cost = round(tokens * 0.00002, 6)
+        charge_budget("tokens", tokens)
+        charge_budget("cost", cost)
+        return f"[симульована відповідь LLM на: '{prompt[:40]}']"
+
+
+llm_service = MockLLM()
+
+
+# ---------------------------------------------------------------------------
+# Вбудована обсервабельність - trace-спани створюються АВТОМАТИЧНО для будь-
+# якого resilient-виклику, позначеного "traced", і для всіх вкладених у нього
+# викликів (навіть без власного "traced") - на відміну від OpenTelemetry, де
+# кожен спан треба створювати вручну в коді.
+# ---------------------------------------------------------------------------
+
+_trace_spans = []
+_current_span = contextvars.ContextVar("oberih_span", default=None)
+
+
+def get_trace_spans():
+    return list(_trace_spans)
+
+
+def clear_trace_spans():
+    _trace_spans.clear()
+
+
+def print_trace_tree():
+    """Друкує дерево спанів з відступами за parent_id - для демонстрації."""
+    by_parent = {}
+    for span in _trace_spans:
+        by_parent.setdefault(span["parent_id"], []).append(span)
+
+    def _print(parent_id, depth):
+        for span in by_parent.get(parent_id, []):
+            print(
+                f"{'  ' * depth}└─ {span['fn_name']} "
+                f"[{span['outcome']}] {span['duration_ms']}ms"
+            )
+            _print(span["id"], depth + 1)
+
+    _print(None, 0)
 
 
 class RateLimitedError(NetworkFailure):
@@ -82,6 +239,66 @@ def _rate_limit_allow(fn_name, cfg):
         return False
     timestamps.append(now)
     return True
+
+
+class SaturationRejectedError(NetworkFailure):
+    def __init__(self, fn_name, current_limit):
+        super().__init__(
+            f"'{fn_name}' - адаптивний ліміт (зараз {current_limit:.1f}) заповнений, "
+            f"система свідомо знижує навантаження через зростання затримки"
+        )
+
+
+# Стан адаптивного бекпрешеру persists між викликами (як і circuit breaker) -
+# алгоритм AIMD (Additive-Increase/Multiplicative-Decrease), той самий дух,
+# що й TCP Vegas / Netflix concurrency-limits: якщо затримка залишається
+# близькою до найкращої коли-небудь спостереженої - ліміт повільно росте;
+# якщо затримка різко зростає (ознака черги/перевантаження) чи стається
+# збій - ліміт різко падає.
+_adaptive_state = {}
+_adaptive_lock = threading.Lock()
+
+
+def _get_adaptive_state(fn_name, min_limit):
+    with _adaptive_lock:
+        if fn_name not in _adaptive_state:
+            _adaptive_state[fn_name] = {
+                "limit": float(min_limit),
+                "in_flight": 0,
+                "min_latency": None,
+                "lock": threading.Lock(),
+            }
+        return _adaptive_state[fn_name]
+
+
+def _adaptive_try_acquire(state):
+    with state["lock"]:
+        if state["in_flight"] >= state["limit"]:
+            return False
+        state["in_flight"] += 1
+        return True
+
+
+def _adaptive_release(state, min_limit, max_limit, latency, failed):
+    with state["lock"]:
+        state["in_flight"] -= 1
+        if state["min_latency"] is None or latency < state["min_latency"]:
+            state["min_latency"] = latency
+        baseline = state["min_latency"] or latency
+        queueing_detected = latency > baseline * 2.0
+        if failed or queueing_detected:
+            state["limit"] = max(min_limit, state["limit"] * 0.7)   # мультиплікативне зниження
+        else:
+            state["limit"] = min(max_limit, state["limit"] + 1)      # адитивне зростання
+
+
+def adaptive_backpressure_snapshot():
+    """Для дебагу/демонстрації - поточний стан усіх адаптивних лімітів."""
+    with _adaptive_lock:
+        return {
+            k: {"limit": v["limit"], "in_flight": v["in_flight"], "min_latency": v["min_latency"]}
+            for k, v in _adaptive_state.items()
+        }
 
 
 def _get_bulkhead_semaphore(fn_name, max_concurrent):
@@ -122,11 +339,12 @@ _current_budget = contextvars.ContextVar("oberih_budget", default=None)
 
 
 class Budget:
-    def __init__(self, deadline_seconds, retry_budget, owner_fn):
+    def __init__(self, deadline_seconds, retry_budget, owner_fn, resources=None):
         self.deadline_at = time.monotonic() + deadline_seconds
         self.retries_left = retry_budget
         self.owner_fn = owner_fn
         self.attempts_log = []  # для демонстрації/дебагу
+        self.resources = dict(resources or {})  # напр. {"tokens": 50000, "cost": 5.0}
 
     def is_expired(self):
         return time.monotonic() > self.deadline_at or self.retries_left <= 0
@@ -169,6 +387,46 @@ class MockNetwork:
 
 
 network = MockNetwork()
+
+# HTTP_MODE перемикає http.get між мок-мережею (для тестів, де ми навмисно
+# симулюємо збої) і СПРАВЖНІМИ HTTP-запитами (для реального запуску .obh
+# програм через CLI). Тести не чіпають цей прапорець - лишаються на "mock".
+HTTP_MODE = "mock"
+
+REPLAY_MODE = False  # у режимі replay реальне I/O заборонено - тільки дані з журналу
+
+
+class RealHTTPClient:
+    """Справжній HTTP-клієнт на стандартній бібліотеці urllib - без зайвих
+    залежностей. JSON-відповіді автоматично розпарсюються в поля, щоб
+    .obh-код міг одразу звертатись до response.fieldName."""
+
+    def get(self, url, timeout=10):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Oberih/0.3"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw_body = resp.read().decode("utf-8", errors="replace")
+                status = resp.status
+        except urllib.error.HTTPError as e:
+            raise NetworkFailure(f"HTTP {e.code} для {url}") from e
+        except urllib.error.URLError as e:
+            raise NetworkFailure(f"Мережева помилка для {url}: {e.reason}") from e
+        except TimeoutError as e:
+            raise NetworkFailure(f"Таймаут з'єднання для {url}") from e
+
+        try:
+            parsed = json.loads(raw_body)
+        except json.JSONDecodeError:
+            return {"status": status, "body": raw_body, "url": url}
+
+        if isinstance(parsed, dict):
+            parsed["_status"] = status
+            parsed["_url"] = url
+            return parsed
+        return {"status": status, "value": parsed, "url": url}
+
+
+real_http = RealHTTPClient()
 
 
 # Стан circuit breaker persists між викликами (на відміну від Budget,
@@ -246,11 +504,42 @@ def call_resilient(fn_name, modifiers, body_fn, call_args=()):
 
     parent_budget = _current_budget.get()
 
-    if "deadline" in modifiers or "retryBudget" in modifiers:
+    # --- Durable Execution: встановлюємо або успадковуємо workflow-контекст ---
+    parent_workflow = _current_workflow.get()
+    workflow_ctx = parent_workflow
+    if "durable" in modifiers and parent_workflow is None:
+        workflow_id = f"{fn_name}:{tuple(repr(a) for a in call_args)}"
+        workflow_ctx = WorkflowContext(workflow_id)
+
+    step_key = None
+    journal = None
+    if workflow_ctx is not None:
+        workflow_ctx.counter += 1
+        step_key = f"{workflow_ctx.id}::step{workflow_ctx.counter}::{fn_name}"
+        journal = _load_journal()
+        if step_key in journal:
+            return journal[step_key]["value"]  # replay - жодного реального I/O
+        if REPLAY_MODE:
+            raise RuntimeError(
+                f"REPLAY: крок '{step_key}' відсутній у журналі - "
+                f"неможливо продовжити без реального виконання. "
+                f"Ця гілка ніколи не виконувалась у записаному запуску."
+            )
+
+    workflow_token = _current_workflow.set(workflow_ctx)
+
+    parent_span = _current_span.get()
+    tracing_active = "traced" in modifiers or parent_span is not None
+    span_id = f"span-{uuid.uuid4().hex[:8]}" if tracing_active else None
+    span_start = time.monotonic()
+    span_token = _current_span.set(span_id if tracing_active else parent_span)
+
+    if "deadline" in modifiers or "retryBudget" in modifiers or "budget" in modifiers:
         budget = Budget(
             deadline_seconds=modifiers.get("deadline", 9999),
             retry_budget=modifiers.get("retryBudget", 9999),
             owner_fn=fn_name,
+            resources=modifiers.get("budget"),
         )
     else:
         budget = parent_budget
@@ -269,6 +558,7 @@ def call_resilient(fn_name, modifiers, body_fn, call_args=()):
         rate_cfg = modifiers.get("rateLimit")
         bulkhead_cfg = modifiers.get("bulkhead")
         hedging_cfg = modifiers.get("hedging")
+        saturating_cfg = modifiers.get("saturating")
         last_error = None
 
         attempt = 0
@@ -284,6 +574,15 @@ def call_resilient(fn_name, modifiers, body_fn, call_args=()):
                 last_error = RateLimitedError(fn_name)
                 break  # ліміт частоти вичерпано - не робимо запит взагалі
 
+            adaptive_state = None
+            adaptive_acquired = False
+            if saturating_cfg:
+                adaptive_state = _get_adaptive_state(fn_name, saturating_cfg["min"])
+                if not _adaptive_try_acquire(adaptive_state):
+                    last_error = SaturationRejectedError(fn_name, adaptive_state["limit"])
+                    break  # система сама вирішила знизити навантаження - не пробуємо
+                adaptive_acquired = True
+
             sem = None
             if bulkhead_cfg:
                 sem = _get_bulkhead_semaphore(fn_name, bulkhead_cfg["maxConcurrent"])
@@ -294,6 +593,7 @@ def call_resilient(fn_name, modifiers, body_fn, call_args=()):
             if has_explicit_retries:
                 budget.consume_attempt(fn_name)
             attempt += 1
+            attempt_started_at = time.monotonic()
             try:
                 if hedging_cfg:
                     result = _invoke_with_hedging(body_fn, call_args, hedging_cfg["after"])
@@ -315,6 +615,9 @@ def call_resilient(fn_name, modifiers, body_fn, call_args=()):
                     )
                 if idem_key is not None:
                     _idempotency_cache[idem_key] = result
+                if step_key is not None:
+                    journal[step_key] = {"value": result}
+                    _save_journal(journal)
                 return result
             except NetworkFailure as e:
                 last_error = e
@@ -324,6 +627,13 @@ def call_resilient(fn_name, modifiers, body_fn, call_args=()):
             finally:
                 if sem is not None:
                     sem.release()
+                if adaptive_acquired:
+                    latency = time.monotonic() - attempt_started_at
+                    failed = sys.exc_info()[0] is not None
+                    _adaptive_release(
+                        adaptive_state, saturating_cfg["min"], saturating_cfg["max"],
+                        latency, failed=failed,
+                    )
 
         # --- Вичерпано: fallback -> emergencyFallback -> ResilienceExhausted ---
         fallback_defined = "fallback" in modifiers
@@ -339,14 +649,31 @@ def call_resilient(fn_name, modifiers, body_fn, call_args=()):
             try:
                 return modifiers["emergency_fallback"]()
             except Exception:
-                raise ResilienceExhausted(fn_name) from last_error
+                _raise_exhausted(fn_name, budget, last_error)
 
         if fallback_defined:
             # fallback був, але теж провалився, emergency відсутній
-            raise ResilienceExhausted(fn_name) from last_error
+            _raise_exhausted(fn_name, budget, last_error)
 
         if last_error is not None:
             raise last_error
-        raise ResilienceExhausted(fn_name)
+        _raise_exhausted(fn_name, budget, last_error)
     finally:
         _current_budget.reset(token)
+        _current_workflow.reset(workflow_token)
+        if tracing_active:
+            exc_type = sys.exc_info()[0]
+            if exc_type is None:
+                outcome = "success"
+            elif exc_type is ResilienceExhausted:
+                outcome = "exhausted"
+            else:
+                outcome = "error"
+            _trace_spans.append({
+                "id": span_id,
+                "parent_id": parent_span,
+                "fn_name": fn_name,
+                "duration_ms": round((time.monotonic() - span_start) * 1000, 2),
+                "outcome": outcome,
+            })
+        _current_span.reset(span_token)
