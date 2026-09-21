@@ -1,7 +1,0 @@
-{
-  "name": "oberih-self",
-  "version": "0.3.0",
-  "dependencies": {
-    "mathutils": "./examples/lib"
-  }
-}
