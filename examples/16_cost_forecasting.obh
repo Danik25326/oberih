@@ -1,0 +1,21 @@
+resilient fn askAgentA(q: String) -> Result<String, Error>
+    deadline(10s)
+    retryBudget(3)
+    budget(tokens: 5000, cost: 0.5)
+{
+    return agent.call(q)
+}
+
+resilient fn askAgentB(q: String) -> Result<String, Error>
+    deadline(15s)
+    retryBudget(4)
+    budget(tokens: 8000, cost: 1.2)
+{
+    return agent.call(q)
+}
+
+fn runFullPipeline(question: String) -> Number {
+    let a = askAgentA(question)
+    let b = askAgentB(question)
+    return 0
+}

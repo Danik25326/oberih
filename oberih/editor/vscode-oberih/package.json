@@ -1,0 +1,43 @@
+{
+  "name": "oberih-language",
+  "displayName": "Oberih Language Support",
+  "description": "Syntax highlighting and language server for the Oberih (.obh) programming language",
+  "version": "0.2.0",
+  "engines": {
+    "vscode": "^1.60.0"
+  },
+  "categories": ["Programming Languages"],
+  "activationEvents": ["onLanguage:oberih"],
+  "main": "./extension.js",
+  "dependencies": {
+    "vscode-languageclient": "^8.0.0"
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "oberih",
+        "aliases": ["Oberih", "oberih"],
+        "extensions": [".obh"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "oberih",
+        "scopeName": "source.oberih",
+        "path": "./syntaxes/oberih.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Oberih",
+      "properties": {
+        "oberih.pythonPath": {
+          "type": "string",
+          "default": "python3",
+          "description": "Шлях до python3, яким запускати lsp_server.py"
+        }
+      }
+    }
+  }
+}
+

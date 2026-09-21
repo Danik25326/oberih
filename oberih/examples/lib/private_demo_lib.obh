@@ -1,0 +1,7 @@
+private fn internalHelper(x: Number) -> Number {
+    return x + 1
+}
+
+fn publicApi(x: Number) -> Number {
+    return internalHelper(x)
+}
