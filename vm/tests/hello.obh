@@ -1,0 +1,56 @@
+// Тест власного рантайму Oberih
+// Запуск: oberih run hello.obh
+
+resilient fn getGreeting(name: String) -> String
+    deadline(2s)
+    retryBudget(3)
+    fallback(defaultGreeting)
+{
+    return Ok("Привіт, " + name + "!")
+}
+
+fn defaultGreeting(name: String) -> String {
+    return "Привіт, незнайомцю!"
+}
+
+struct Counter {
+    value: Number
+}
+
+fn Counter.increment(self: Counter) -> Number {
+    self.value = self.value + 1
+    return self.value
+}
+
+fn main() -> Number {
+    // Result і ?
+    let greeting = getGreeting("Oberih")?
+    println(greeting)
+
+    // Struct + method mutation
+    let c = Counter(0)
+    c.increment()
+    c.increment()
+    c.increment()
+    println("Лічильник: " + toString(c.value))
+
+    // match
+    let r = Ok(42)
+    let msg = match r {
+        Ok(v)  => "Отримали: " + toString(v),
+        Err(e) => "Помилка: " + e,
+        _      => "невідомо"
+    }
+    println(msg)
+
+    // spawn + join
+    let h = spawn work(10)
+    let result = h.join()
+    println("spawn результат: " + toString(result))
+
+    return 0
+}
+
+fn work(n: Number) -> Number {
+    return n * 2
+}
