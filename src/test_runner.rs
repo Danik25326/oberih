@@ -4,7 +4,7 @@
 
 use crate::parser::ast::{Program, Item};
 use crate::compiler::Compiler;
-use crate::vm::{VM, Value, RuntimeError};
+use crate::vm::{VM, Value};
 
 #[derive(Debug)]
 pub struct TestResult {

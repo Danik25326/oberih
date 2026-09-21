@@ -128,10 +128,11 @@ impl Compiler {
         ctx.emit(Instr::PushNil);
         ctx.emit(Instr::Return);
 
+        let local_count = ctx.local_count();
         self.compiled.push(CompiledFn {
             name:        f.name.clone(),
             code:        ctx.code,
-            local_count: ctx.local_count(),
+            local_count,
             resilience:  ctx.resilience,
         });
         Ok(())

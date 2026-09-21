@@ -1,7 +1,6 @@
 /// Стандартна бібліотека Oberih.
 /// Всі вбудовані функції — без зовнішніх залежностей, тільки std.
 
-use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::io::{self, BufRead, Write};
 use crate::vm::{Value, RuntimeError};

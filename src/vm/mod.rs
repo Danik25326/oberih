@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::compiler::bytecode::{Instr, Module, CompiledFn, ResilienceMeta};
+use crate::compiler::bytecode::{Instr, Module, CompiledFn};
 
 // ---------------------------------------------------------------------------
 // Value — runtime тип
@@ -271,7 +271,7 @@ impl VM {
         let res = &func.resilience;
 
         // --- Circuit breaker перевірка ---
-        if let Some(cb) = &res.circuit_breaker {
+        if let Some(_cb) = &res.circuit_breaker {
             let state = self.cb_state.entry(func.name.clone()).or_insert_with(|| CircuitState {
                 failures: 0,
                 open_until: None,

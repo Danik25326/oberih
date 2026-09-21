@@ -216,7 +216,7 @@ impl Typechecker {
         self.check_block(&f.body, &mut env, &expected_ret, &f.span);
     }
 
-    fn check_block(&mut self, block: &Block, env: &mut TyEnv, ret_ty: &Ty, span: &Span) {
+    fn check_block(&mut self, block: &Block, env: &mut TyEnv, ret_ty: &Ty, _span: &Span) {
         env.push();
         for stmt in block {
             self.check_stmt(stmt, env, ret_ty);
@@ -226,7 +226,7 @@ impl Typechecker {
 
     fn check_stmt(&mut self, stmt: &Stmt, env: &mut TyEnv, ret_ty: &Ty) {
         match stmt {
-            Stmt::Let { name, value, span } => {
+            Stmt::Let { name, value, span: _ } => {
                 let ty = self.infer_expr(value, env);
                 env.define(name, ty);
             }
@@ -317,7 +317,7 @@ impl Typechecker {
             Expr::StringLit(_, _) => Ty::Str,
             Expr::Bool(_, _)      => Ty::Bool,
 
-            Expr::Ident(name, span) => {
+            Expr::Ident(name, _span) => {
                 if let Some(ty) = env.lookup(name) {
                     ty.clone()
                 } else if let Some((params, ret)) = self.fn_sigs.get(name).cloned() {
@@ -482,7 +482,7 @@ impl Typechecker {
                 Ty::Unknown
             }
 
-            Expr::MethodCall { object, method, args, span } => {
+            Expr::MethodCall { object, method, args, span: _ } => {
                 let obj_ty = self.infer_expr(object, env);
                 for a in args { self.infer_expr(a, env); }
                 match &obj_ty {
