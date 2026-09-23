@@ -29,6 +29,9 @@ pub enum Value {
     // List — GcList з reference counting
     List(GcList),
 
+    // WeakRef — слабке посилання для циклічних структур
+    WeakRef(crate::gc::WeakList),
+
     // SpawnHandle
     Spawn(SpawnHandle),
 
@@ -78,7 +81,14 @@ impl std::fmt::Display for Value {
             Value::Ok(v)   => write!(f, "Ok({})", v),
             Value::Err(v)  => write!(f, "Err({})", v),
             Value::Struct(s) => write!(f, "{}", s),
-            Value::List(l) => write!(f, "{}", l),
+            Value::List(l)    => write!(f, "{}", l),
+            Value::WeakRef(w) => {
+                if w.is_alive() {
+                    write!(f, "<WeakRef: alive>")
+                } else {
+                    write!(f, "<WeakRef: dropped>")
+                }
+            }
             Value::Spawn(_) => write!(f, "<SpawnHandle>"),
             Value::Fn(n)    => write!(f, "<fn {}>", n),
         }
@@ -95,6 +105,7 @@ impl PartialEq for Value {
             (Value::Ok(a),   Value::Ok(b))   => a == b,
             (Value::Err(a),  Value::Err(b))  => a == b,
             (Value::List(a), Value::List(b)) => a == b,
+            (Value::WeakRef(_), Value::WeakRef(_)) => false, // слабкі посилання не рівні
             _ => false,
         }
     }
@@ -755,6 +766,16 @@ impl VM {
                     }
                     "isDone" => Ok(Value::Bool(h.done.load(std::sync::atomic::Ordering::Acquire))),
                     _ => Err(rt_err(format!("Невідомий метод spawn хендлу: {}", method))),
+                }
+            }
+            Value::WeakRef(w) => {
+                match method {
+                    "upgrade" => match w.upgrade() {
+                        Some(list) => Ok(Value::Ok(Box::new(Value::List(list)))),
+                        None       => Ok(Value::Err(Box::new(Value::Str("об'єкт звільнено".into())))),
+                    },
+                    "isAlive" => Ok(Value::Bool(w.is_alive())),
+                    _ => Err(rt_err(format!("Невідомий метод WeakRef: {}", method))),
                 }
             }
             _ => Err(rt_err(format!("Метод '{}' недоступний для {}", method, receiver))),

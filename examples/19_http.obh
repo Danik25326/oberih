@@ -1,0 +1,41 @@
+// 19_http.obh — HTTP запити в Oberih
+//
+// Запуск: oberih run examples/19_http.obh
+// Потрібен локальний сервер або доступний HTTP endpoint
+
+resilient fn getJsonPlaceholder() -> String
+    deadline(5s)
+    retries(2)
+    fallback(offlineData)
+{
+    let resp = httpGet("http://jsonplaceholder.typicode.com/todos/1")?
+    return resp.body
+}
+
+fn offlineData() -> String {
+    return "offline: дані недоступні"
+}
+
+resilient fn postData(url: String, body: String) -> String
+    deadline(5s)
+    retries(1)
+{
+    let resp = httpPost(url, body)?
+    return resp.body
+}
+
+fn main() -> Number {
+    println("=== Oberih HTTP Client ===")
+    println("")
+
+    // GET запит
+    println("GET jsonplaceholder.typicode.com/todos/1:")
+    let data = getJsonPlaceholder()
+    println(data)
+    println("")
+
+    // Статистика GC
+    gcstats()
+
+    return 0
+}

@@ -1,7 +1,8 @@
 /// Oberih GC — reference counting garbage collector.
 /// Arc<Mutex<>> — thread-safe, працює з spawn.
+/// WeakRef — слабкі посилання для циклічних структур.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static GC_ALLOCS: AtomicUsize = AtomicUsize::new(0);
@@ -36,9 +37,7 @@ impl GcList {
         GcList(Arc::new(Mutex::new(elems)))
     }
 
-    pub fn empty() -> Self {
-        Self::new(vec![])
-    }
+    pub fn empty() -> Self { Self::new(vec![]) }
 
     pub fn len(&self) -> usize {
         self.0.lock().unwrap().len()
@@ -81,6 +80,10 @@ impl GcList {
     pub fn ref_count(&self) -> usize {
         Arc::strong_count(&self.0)
     }
+
+    pub fn downgrade(&self) -> WeakList {
+        WeakList(Arc::downgrade(&self.0))
+    }
 }
 
 impl Drop for GcList {
@@ -106,5 +109,18 @@ impl std::fmt::Display for GcList {
             write!(f, "{}", v)?;
         }
         write!(f, "]")
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct WeakList(pub Weak<Mutex<Vec<crate::vm::Value>>>);
+
+impl WeakList {
+    pub fn upgrade(&self) -> Option<GcList> {
+        self.0.upgrade().map(GcList)
+    }
+
+    pub fn is_alive(&self) -> bool {
+        self.0.strong_count() > 0
     }
 }

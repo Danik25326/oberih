@@ -13,32 +13,20 @@ mod test_runner;
 use std::fs;
 use std::path::Path;
 
-#[cfg(windows)]
-unsafe fn windows_ansi_enable() {
-    // Вмикаємо Virtual Terminal Processing для ANSI кольорів
-    use std::os::windows::io::AsRawHandle;
-    let handle = std::io::stdout().as_raw_handle();
-    let mut mode: u32 = 0;
-    if GetConsoleMode(handle as _, &mut mode) != 0 {
-        SetConsoleMode(handle as _, mode | 0x0004);
+fn enable_ansi_on_windows() {
+    #[cfg(windows)]
+    {
+        // SetConsoleMode через std::process — без unsafe
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", ""])
+            .status();
+        // Альтернативно — просто встановлюємо змінну середовища
+        std::env::set_var("TERM", "xterm-256color");
     }
-}
-
-#[cfg(windows)]
-extern "system" {
-    fn GetConsoleMode(handle: *mut std::ffi::c_void, mode: *mut u32) -> i32;
-    fn SetConsoleMode(handle: *mut std::ffi::c_void, mode: u32) -> i32;
 }
 
 fn main() {
-    // Вмикаємо ANSI кольори на Windows
-    #[cfg(windows)]
-    {
-        let _ = unsafe {
-            windows_ansi_enable()
-        };
-    }
-
+    enable_ansi_on_windows();
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() < 2 {

@@ -1,4 +1,132 @@
 // oberih-cli — CLI утиліта написана на Oberih
+// Демонструє: resilience, struct, Result, match, spawn, HTTP
+//
+// Запуск: oberih run examples/cli_tool.obh localhost:8080
+
+struct Config {
+    host:      String,
+    timeoutMs: Number,
+    retries:   Number
+}
+
+struct Response {
+    status: Number,
+    body:   String,
+    ok:     Bool
+}
+
+// --- Парсинг аргументів ---
+
+fn parseArgs() -> Config {
+    let argv = args()
+    let host = "localhost:8080"
+    if (len(argv) > 0) {
+        host = argv[0]
+    }
+    return Config(host, 2000, 3)
+}
+
+// --- HTTP запити ---
+
+resilient fn fetchHealth(cfg: Config) -> Response
+    deadline(3s)
+    retries(3)
+    fallback(healthFallback)
+{
+    let url = "http://" + cfg.host + "/health"
+    let result = httpGet(url)?
+    return Response(result.status, result.body, result.ok)
+}
+
+fn healthFallback(cfg: Config) -> Response {
+    return Response(0, "сервіс недоступний", false)
+}
+
+resilient fn fetchStatus(cfg: Config) -> Response
+    deadline(5s)
+    retries(2)
+    fallback(statusFallback)
+{
+    let url = "http://" + cfg.host + "/status"
+    let result = httpGet(url)?
+    return Response(result.status, result.body, result.ok)
+}
+
+fn statusFallback(cfg: Config) -> Response {
+    return Response(0, "статус недоступний", false)
+}
+
+// --- Форматування виводу ---
+
+fn printResponse(label: String, resp: Response) {
+    if (resp.ok) {
+        println("OK " + label + " [" + toString(resp.status) + "]: " + resp.body)
+    } else {
+        println("FAIL " + label + " [" + toString(resp.status) + "]: " + resp.body)
+    }
+}
+
+fn printSeparator() {
+    println("--------------------------------")
+}
+
+// --- Тести ---
+
+fn testConfigDefaults() -> Bool {
+    let cfg = Config("localhost", 2000, 3)
+    return cfg.host == "localhost"
+}
+
+fn testResponseOk() -> Bool {
+    let r = Response(200, "ok", true)
+    return r.ok == true
+}
+
+fn testFallbackResponse() -> Bool {
+    let r = healthFallback(Config("bad-host", 100, 1))
+    return r.ok == false
+}
+
+fn testMatchOnResponse() -> Bool {
+    let r = Response(200, "pong", true)
+    let msg = match r.ok {
+        true  => "alive",
+        false => "dead",
+        _     => "unknown"
+    }
+    return msg == "alive"
+}
+
+// --- Головна функція ---
+
+fn main() -> Number {
+    printSeparator()
+    println("Oberih CLI -- health checker")
+    printSeparator()
+
+    let cfg = parseArgs()
+    println("Хост: " + cfg.host)
+    println("")
+
+    let h1 = spawn fetchHealth(cfg)
+    let h2 = spawn fetchStatus(cfg)
+
+    let health = h1.join()
+    let status = h2.join()
+
+    printResponse("Health", health)
+    printResponse("Status", status)
+
+    printSeparator()
+
+    if (health.ok) {
+        println("Сервіс: ОНЛАЙН")
+        return 0
+    } else {
+        println("Сервіс: НЕДОСТУПНИЙ")
+        return 1
+    }
+}
 // Демонструє: resilience, struct, Result, match, spawn, stdlib
 //
 // Запуск: oberih run examples/cli_tool.obh

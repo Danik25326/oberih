@@ -2,7 +2,8 @@
 /// Всі вбудовані функції — без зовнішніх залежностей, тільки std.
 
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Write, Read};
+use std::net::TcpStream;
 use crate::vm::{Value, RuntimeError};
 use crate::gc::GcList;
 
@@ -17,6 +18,8 @@ pub fn is_builtin(name: &str) -> bool {
     matches!(name,
         // IO
         "print" | "println" | "readLine" | "readFile" | "writeFile" | "appendFile" |
+        // HTTP
+        "httpGet" | "httpPost" | "httpPut" | "httpDelete" |
         // Конвертація
         "toString" | "toNumber" | "toBool" |
         // Рядки
@@ -33,7 +36,9 @@ pub fn is_builtin(name: &str) -> bool {
         // Процес
         "exit" | "args" | "env" |
         // Відладка
-        "debug" | "assert" | "panic" | "gcstats"
+        "debug" | "assert" | "panic" | "gcstats" |
+        // WeakRef
+        "weakRef" | "upgrade" | "isAlive"
     )
 }
 
@@ -88,7 +93,37 @@ pub fn call_builtin(name: &str, args: Vec<Value>) -> VR<Value> {
             }
         }
 
-        // --- Конвертація ---
+        // --- HTTP ---
+        "httpGet" => {
+            let url = require_str(&args, 0, "httpGet")?;
+            match http_request("GET", &url, None, args.get(1)) {
+                Ok(resp)  => Ok(Value::Ok(Box::new(resp))),
+                Err(e)    => Ok(Value::Err(Box::new(Value::Str(e)))),
+            }
+        }
+        "httpPost" => {
+            let url  = require_str(&args, 0, "httpPost")?;
+            let body = args.get(1).map(|v| v.to_string()).unwrap_or_default();
+            match http_request("POST", &url, Some(&body), args.get(2)) {
+                Ok(resp) => Ok(Value::Ok(Box::new(resp))),
+                Err(e)   => Ok(Value::Err(Box::new(Value::Str(e)))),
+            }
+        }
+        "httpPut" => {
+            let url  = require_str(&args, 0, "httpPut")?;
+            let body = args.get(1).map(|v| v.to_string()).unwrap_or_default();
+            match http_request("PUT", &url, Some(&body), args.get(2)) {
+                Ok(resp) => Ok(Value::Ok(Box::new(resp))),
+                Err(e)   => Ok(Value::Err(Box::new(Value::Str(e)))),
+            }
+        }
+        "httpDelete" => {
+            let url = require_str(&args, 0, "httpDelete")?;
+            match http_request("DELETE", &url, None, args.get(1)) {
+                Ok(resp) => Ok(Value::Ok(Box::new(resp))),
+                Err(e)   => Ok(Value::Err(Box::new(Value::Str(e)))),
+            }
+        }
         "toString" => {
             Ok(Value::Str(args.into_iter().next().unwrap_or(Value::Nil).to_string()))
         }
@@ -296,6 +331,36 @@ pub fn call_builtin(name: &str, args: Vec<Value>) -> VR<Value> {
             Err(rt_err(format!("panic: {}", msg)))
         }
 
+        "weakRef" => {
+            // weakRef(list) -> WeakRef
+            // Створює слабке посилання — не утримує список живим
+            match args.into_iter().next() {
+                Some(Value::List(l)) => Ok(Value::WeakRef(l.downgrade())),
+                _ => Err(rt_err("weakRef: потрібен List")),
+            }
+        }
+        "upgrade" => {
+            // upgrade(weakRef) -> Ok(list) або Err("dropped")
+            // Намагається отримати сильне посилання
+            match args.into_iter().next() {
+                Some(Value::WeakRef(w)) => {
+                    match w.upgrade() {
+                        Some(list) => Ok(Value::Ok(Box::new(Value::List(list)))),
+                        None       => Ok(Value::Err(Box::new(Value::Str("об'єкт вже звільнено GC".into())))),
+                    }
+                }
+                _ => Err(rt_err("upgrade: потрібен WeakRef")),
+            }
+        }
+        "isAlive" => {
+            // isAlive(weakRef) -> Bool
+            match args.into_iter().next() {
+                Some(Value::WeakRef(w)) => Ok(Value::Bool(w.is_alive())),
+                Some(Value::List(_))    => Ok(Value::Bool(true)),  // сильне посилання — завжди живе
+                _                       => Ok(Value::Bool(false)),
+            }
+        }
+
         "gcstats" => {
             let stats = crate::gc::gc_stats();
             println!("GC: allocs={} drops={} live={}",
@@ -305,6 +370,80 @@ pub fn call_builtin(name: &str, args: Vec<Value>) -> VR<Value> {
 
         _ => Err(rt_err(format!("Невідома вбудована функція: '{}'", name))),
     }
+}
+
+// ---------------------------------------------------------------------------
+// HTTP клієнт — чистий TCP, нуль залежностей
+// ---------------------------------------------------------------------------
+
+fn parse_url(url: &str) -> Result<(String, u16, String), String> {
+    let url = url.trim_start_matches("http://");
+    let (host_port, path) = if let Some(idx) = url.find('/') {
+        (&url[..idx], url[idx..].to_string())
+    } else {
+        (url, "/".to_string())
+    };
+    let (host, port) = if let Some(idx) = host_port.rfind(':') {
+        let port = host_port[idx+1..].parse::<u16>()
+            .map_err(|_| format!("Невірний порт: {}", &host_port[idx+1..]))?;
+        (host_port[..idx].to_string(), port)
+    } else {
+        (host_port.to_string(), 80)
+    };
+    Ok((host, port, path))
+}
+
+fn http_request(
+    method:  &str,
+    url:     &str,
+    body:    Option<&str>,
+    _headers: Option<&Value>,
+) -> Result<Value, String> {
+    if !url.starts_with("http://") {
+        return Err(format!("Тільки http:// підтримується: {}", url));
+    }
+
+    let (host, port, path) = parse_url(url)?;
+
+    let mut stream = TcpStream::connect(format!("{}:{}", host, port))
+        .map_err(|e| format!("З'єднання невдале: {}", e))?;
+
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .map_err(|e| e.to_string())?;
+
+    let body_str = body.unwrap_or("");
+    let request = format!(
+        "{} {} HTTP/1.1\r\nHost: {}\r\nContent-Length: {}\r\nConnection: close\r\nUser-Agent: Oberih/0.3\r\n\r\n{}",
+        method, path, host, body_str.len(), body_str
+    );
+
+    stream.write_all(request.as_bytes())
+        .map_err(|e| format!("Помилка запиту: {}", e))?;
+
+    let mut response = String::new();
+    stream.read_to_string(&mut response)
+        .map_err(|e| format!("Помилка відповіді: {}", e))?;
+
+    // Розбираємо HTTP відповідь
+    let (head, body_resp) = if let Some(idx) = response.find("\r\n\r\n") {
+        (&response[..idx], &response[idx+4..])
+    } else {
+        (response.as_str(), "")
+    };
+
+    // Статус код
+    let status: u16 = head.lines().next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+
+    // Повертаємо struct з status і body
+    let mut fields = std::collections::HashMap::new();
+    fields.insert("status".to_string(), Value::Num(status as f64));
+    fields.insert("body".to_string(),   Value::Str(body_resp.to_string()));
+    fields.insert("ok".to_string(),     Value::Bool(status >= 200 && status < 300));
+
+    Ok(Value::Struct(crate::vm::OberihStruct::new("HttpResponse".to_string(), fields)))
 }
 
 // ---------------------------------------------------------------------------
