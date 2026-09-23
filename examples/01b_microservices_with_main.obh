@@ -1,16 +1,19 @@
 resilient fn fetchOrder(id: String) -> Result<Order, Error>
+    deadline(500ms)
     retries(3)
 {
     return http.get("/orders/" + id)
 }
 
 resilient fn fetchUser(id: String) -> Result<User, Error>
+    deadline(500ms)
     retries(3)
 {
     return http.get("/users/" + id)
 }
 
 resilient fn fetchPaymentStatus(orderId: String) -> Result<PaymentStatus, Error>
+    deadline(500ms)
     retries(2)
 {
     return http.get("/payments/" + orderId + "/status")

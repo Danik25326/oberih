@@ -2,6 +2,7 @@ mod lexer;
 mod parser;
 mod compiler;
 mod vm;
+mod gc;
 mod typechecker;
 mod explain;
 mod stdlib;
@@ -12,7 +13,32 @@ mod test_runner;
 use std::fs;
 use std::path::Path;
 
+#[cfg(windows)]
+unsafe fn windows_ansi_enable() {
+    // Вмикаємо Virtual Terminal Processing для ANSI кольорів
+    use std::os::windows::io::AsRawHandle;
+    let handle = std::io::stdout().as_raw_handle();
+    let mut mode: u32 = 0;
+    if GetConsoleMode(handle as _, &mut mode) != 0 {
+        SetConsoleMode(handle as _, mode | 0x0004);
+    }
+}
+
+#[cfg(windows)]
+extern "system" {
+    fn GetConsoleMode(handle: *mut std::ffi::c_void, mode: *mut u32) -> i32;
+    fn SetConsoleMode(handle: *mut std::ffi::c_void, mode: u32) -> i32;
+}
+
 fn main() {
+    // Вмикаємо ANSI кольори на Windows
+    #[cfg(windows)]
+    {
+        let _ = unsafe {
+            windows_ansi_enable()
+        };
+    }
+
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() < 2 {
@@ -29,7 +55,14 @@ fn main() {
         "tokens"   => cmd_tokens(&args),
         "ast"      => cmd_ast(&args),
         "bytecode" => cmd_bytecode(&args),
-        "version"  => println!("Oberih 0.2.0 — власний рантайм, нуль залежностей"),
+        "version"  => println!("Oberih 0.3.0 — власний рантайм, reference counting GC"),
+        "gc-stats" => {
+            let stats = gc::gc_stats();
+            println!("GC Statistics:");
+            println!("  Всього алокацій:  {}", stats.total_allocs);
+            println!("  Звільнено:        {}", stats.total_drops);
+            println!("  Живих об'єктів:   {}", stats.live_objects);
+        }
         "help" | "--help" | "-h" => print_help(),
         cmd => {
             eprintln!("Невідома команда: '{}'\n", cmd);
@@ -55,6 +88,7 @@ fn print_help() {
     println!("  ast      <файл>          Показати AST");
     println!("  bytecode <файл>          Показати bytecode");
     println!("  version                  Версія");
+    println!("  gc-stats                 Статистика garbage collector");
     println!();
     println!("ПРИКЛАДИ:");
     println!("  oberih run examples/cli_tool.obh");

@@ -348,22 +348,9 @@ impl<'a> Lexer<'a> {
             "false"            => Token::Bool(false),
             "Ok"               => Token::Ok,
             "Err"              => Token::Err,
-            // Resilience модифікатори
-            "deadline"         => Token::Deadline,
-            "retryBudget"      => Token::RetryBudget,
-            "retries"          => Token::Retries,
-            "fallback"         => Token::Fallback,
-            "timeout"          => Token::Timeout,
-            "circuitBreaker"   => Token::CircuitBreaker,
-            "idempotent"       => Token::Idempotent,
-            "cache"            => Token::Cache,
-            "emergencyFallback"=> Token::EmergencyFallback,
-            "rateLimit"        => Token::RateLimit,
-            "bulkhead"         => Token::Bulkhead,
-            "hedging"          => Token::Hedging,
-            "durable"          => Token::Durable,
-            "traced"           => Token::Traced,
-            "budget"           => Token::Budget,
+            // Resilience модифікатори — залишаємо як Ident
+            // щоб їх можна було використовувати як імена полів і змінних.
+            // Парсер розпізнає їх за контекстом після оголошення fn.
             _                  => Token::Ident(word.to_string()),
         }
     }

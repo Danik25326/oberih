@@ -219,8 +219,11 @@ impl Parser {
         self.expect(&Token::LParen)?;
         let params = self.parse_params()?;
         self.expect(&Token::RParen)?;
-        self.expect(&Token::Arrow)?;
-        let return_type = self.parse_type_expr()?;
+        let return_type = if self.eat(&Token::Arrow) {
+            self.parse_type_expr()?
+        } else {
+            TypeExpr::Simple("Nil".to_string())
+        };
 
         // Модифікатори стійкості
         let mut modifiers = Vec::new();
@@ -245,41 +248,47 @@ impl Parser {
             Token::Idempotent | Token::Cache | Token::EmergencyFallback |
             Token::RateLimit | Token::Bulkhead | Token::Hedging |
             Token::Durable | Token::Traced | Token::Budget
-        )
+        ) || matches!(self.peek(), Token::Ident(n) if matches!(n.as_str(),
+            "deadline" | "retryBudget" | "retries" | "fallback" | "timeout" |
+            "circuitBreaker" | "idempotent" | "cache" | "emergencyFallback" |
+            "rateLimit" | "bulkhead" | "hedging" | "durable" | "traced" | "budget"
+        ))
     }
 
     fn parse_modifier(&mut self) -> PR<Modifier> {
-        let tok = self.peek().clone();
-        self.advance();
-        match tok {
-            Token::Durable => return Ok(Modifier::Durable),
-            Token::Traced  => return Ok(Modifier::Traced),
-            _ => {}
-        }
+        // Нормалізуємо токен — Ident("deadline") або Token::Deadline однакові
+        let name = match self.peek().clone() {
+            Token::Ident(n) => { self.advance(); n }
+            Token::Deadline        => { self.advance(); "deadline".to_string() }
+            Token::RetryBudget     => { self.advance(); "retryBudget".to_string() }
+            Token::Retries         => { self.advance(); "retries".to_string() }
+            Token::Fallback        => { self.advance(); "fallback".to_string() }
+            Token::Timeout         => { self.advance(); "timeout".to_string() }
+            Token::CircuitBreaker  => { self.advance(); "circuitBreaker".to_string() }
+            Token::Idempotent      => { self.advance(); "idempotent".to_string() }
+            Token::Cache           => { self.advance(); "cache".to_string() }
+            Token::EmergencyFallback => { self.advance(); "emergencyFallback".to_string() }
+            Token::RateLimit       => { self.advance(); "rateLimit".to_string() }
+            Token::Bulkhead        => { self.advance(); "bulkhead".to_string() }
+            Token::Hedging         => { self.advance(); "hedging".to_string() }
+            Token::Durable         => { self.advance(); return Ok(Modifier::Durable) }
+            Token::Traced          => { self.advance(); return Ok(Modifier::Traced) }
+            Token::Budget          => { self.advance(); "budget".to_string() }
+            _ => return Err(self.error("Очікувався модифікатор")),
+        };
+
+        // durable і traced без дужок
+        if name == "durable" { return Ok(Modifier::Durable); }
+        if name == "traced"  { return Ok(Modifier::Traced); }
+
         self.expect(&Token::LParen)?;
-        let m = match tok {
-            Token::Deadline => {
-                let d = self.parse_duration()?;
-                Modifier::Deadline(d)
-            }
-            Token::RetryBudget => {
-                let n = self.expect_u32()?;
-                Modifier::RetryBudget(n)
-            }
-            Token::Retries => {
-                let n = self.expect_u32()?;
-                Modifier::Retries(n)
-            }
-            Token::Fallback => {
-                let e = self.parse_expr()?;
-                Modifier::Fallback(Box::new(e))
-            }
-            Token::Timeout => {
-                let d = self.parse_duration()?;
-                Modifier::Timeout(d)
-            }
-            Token::CircuitBreaker => {
-                // failThreshold: N, cooldown: Xs
+        let m = match name.as_str() {
+            "deadline" => Modifier::Deadline(self.parse_duration()?),
+            "retryBudget" => Modifier::RetryBudget(self.expect_u32()?),
+            "retries"     => Modifier::Retries(self.expect_u32()?),
+            "fallback"    => Modifier::Fallback(Box::new(self.parse_expr()?)),
+            "timeout"     => Modifier::Timeout(self.parse_duration()?),
+            "circuitBreaker" => {
                 self.expect_named("failThreshold")?;
                 let ft = self.expect_u32()?;
                 self.expect(&Token::Comma)?;
@@ -287,41 +296,33 @@ impl Parser {
                 let cd = self.parse_duration()?;
                 Modifier::CircuitBreaker { fail_threshold: ft, cooldown: cd }
             }
-            Token::Idempotent => {
+            "idempotent" => {
                 self.expect_named("key")?;
-                let key = self.parse_expr()?;
-                Modifier::Idempotent { key: Box::new(key) }
+                Modifier::Idempotent { key: Box::new(self.parse_expr()?) }
             }
-            Token::Cache => {
+            "cache" => {
                 self.expect_named("ttl")?;
-                let ttl = self.parse_duration()?;
-                Modifier::Cache { ttl }
+                Modifier::Cache { ttl: self.parse_duration()? }
             }
-            Token::EmergencyFallback => {
-                let e = self.parse_expr()?;
-                Modifier::EmergencyFallback(Box::new(e))
-            }
-            Token::RateLimit => {
+            "emergencyFallback" => Modifier::EmergencyFallback(Box::new(self.parse_expr()?)),
+            "rateLimit" => {
                 let n = self.expect_u32()?;
                 self.expect(&Token::Comma)?;
                 self.expect_named("per")?;
                 let per = self.parse_duration()?;
                 Modifier::RateLimit { n, per }
             }
-            Token::Bulkhead => {
+            "bulkhead" => {
                 self.expect_named("maxConcurrent")?;
-                let mc = self.expect_u32()?;
-                Modifier::Bulkhead { max_concurrent: mc }
+                Modifier::Bulkhead { max_concurrent: self.expect_u32()? }
             }
-            Token::Hedging => {
+            "hedging" => {
                 self.expect_named("after")?;
-                let after = self.parse_duration()?;
-                Modifier::Hedging { after }
+                Modifier::Hedging { after: self.parse_duration()? }
             }
-            Token::Budget => {
-                // budget(tokens: N, cost: M) — обидва опціональні
+            "budget" => {
                 let mut tokens_val = None;
-                let mut cost_val = None;
+                let mut cost_val   = None;
                 while !self.check(&Token::RParen) {
                     let key = self.expect_ident()?;
                     self.expect(&Token::Colon)?;
@@ -335,7 +336,7 @@ impl Parser {
                 }
                 Modifier::Budget { tokens: tokens_val, cost: cost_val }
             }
-            _ => unreachable!(),
+            _ => return Err(self.error(format!("Невідомий модифікатор '{}'", name))),
         };
         self.expect(&Token::RParen)?;
         Ok(m)
@@ -701,6 +702,40 @@ impl Parser {
                 self.expect(&Token::RBrace)?;
                 Ok(Expr::Match { scrutinee: Box::new(scrutinee), arms, span })
             }
+            Token::If => {
+                self.advance();
+                self.expect(&Token::LParen)?;
+                let cond = self.parse_expr()?;
+                self.expect(&Token::RParen)?;
+                self.expect(&Token::LBrace)?;
+                let then_stmts = self.parse_block()?;
+                self.expect(&Token::RBrace)?;
+                let then_expr = block_to_expr(then_stmts, &span)?;
+                let else_expr = if self.eat(&Token::Else) {
+                    self.expect(&Token::LBrace)?;
+                    let else_stmts = self.parse_block()?;
+                    self.expect(&Token::RBrace)?;
+                    Box::new(block_to_expr(else_stmts, &span)?)
+                } else {
+                    Box::new(Expr::Bool(false, span.clone()))
+                };
+                Ok(Expr::Match {
+                    scrutinee: Box::new(cond),
+                    arms: vec![
+                        MatchArm {
+                            pattern: Pattern::Literal(LiteralPat::Bool(true)),
+                            body:    then_expr,
+                            span:    span.clone(),
+                        },
+                        MatchArm {
+                            pattern: Pattern::Wildcard,
+                            body:    *else_expr,
+                            span:    span.clone(),
+                        },
+                    ],
+                    span,
+                })
+            }
             Token::Minus => {
                 self.advance();
                 let expr = self.parse_primary()?;
@@ -902,4 +937,18 @@ fn main() -> Number {
             }
         }
     }
+}
+
+/// Перетворює блок інструкцій на вираз.
+/// Бере останній `return expr` або `expr` як значення блоку.
+fn block_to_expr(stmts: Vec<ast::Stmt>, span: &ast::Span) -> Result<ast::Expr, ParseError> {
+    for stmt in stmts.into_iter().rev() {
+        match stmt {
+            ast::Stmt::Return { value, .. } => return Ok(value),
+            ast::Stmt::Expr(e)              => return Ok(e),
+            ast::Stmt::Let { .. }           => continue,
+            _                               => continue,
+        }
+    }
+    Ok(ast::Expr::Bool(false, span.clone()))
 }

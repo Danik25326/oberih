@@ -4,9 +4,9 @@
 // Запуск: oberih run examples/cli_tool.obh
 
 struct Config {
-    host:    String,
-    timeout: Number,
-    retries: Number
+    host:       String,
+    timeoutMs:  Number,
+    retries:    Number
 }
 
 struct Response {
@@ -19,10 +19,9 @@ struct Response {
 
 fn parseArgs() -> Config {
     let argv = args()
-    let host = if (len(argv) > 0) {
-        argv[0]
-    } else {
-        "localhost:8080"
+    let host = "localhost:8080"
+    if (len(argv) > 0) {
+        host = argv[0]
     }
     return Config(host, 2000, 3)
 }

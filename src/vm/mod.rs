@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::compiler::bytecode::{Instr, Module, CompiledFn};
+use crate::gc::GcList;
 
 // ---------------------------------------------------------------------------
 // Value — runtime тип
@@ -22,16 +23,16 @@ pub enum Value {
     Ok(Box<Value>),
     Err(Box<Value>),
 
-    // Struct — поля по імені
+    // Struct — Arc<Mutex<>> для thread-safety (spawn)
     Struct(OberihStruct),
 
-    // List
-    List(Vec<Value>),
+    // List — GcList з reference counting
+    List(GcList),
 
     // SpawnHandle
     Spawn(SpawnHandle),
 
-    // Callable (для LoadGlobal функцій)
+    // Callable
     Fn(String),
 }
 
@@ -77,14 +78,7 @@ impl std::fmt::Display for Value {
             Value::Ok(v)   => write!(f, "Ok({})", v),
             Value::Err(v)  => write!(f, "Err({})", v),
             Value::Struct(s) => write!(f, "{}", s),
-            Value::List(l) => {
-                write!(f, "[")?;
-                for (i, v) in l.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
-                    write!(f, "{}", v)?;
-                }
-                write!(f, "]")
-            }
+            Value::List(l) => write!(f, "{}", l),
             Value::Spawn(_) => write!(f, "<SpawnHandle>"),
             Value::Fn(n)    => write!(f, "<fn {}>", n),
         }
@@ -100,6 +94,7 @@ impl PartialEq for Value {
             (Value::Nil,     Value::Nil)     => true,
             (Value::Ok(a),   Value::Ok(b))   => a == b,
             (Value::Err(a),  Value::Err(b))  => a == b,
+            (Value::List(a), Value::List(b)) => a == b,
             _ => false,
         }
     }
@@ -580,7 +575,7 @@ impl VM {
                 Instr::MakeList(n) => {
                     let mut elems: Vec<Value> = (0..*n).map(|_| stack.pop().unwrap_or(Value::Nil)).collect();
                     elems.reverse();
-                    push!(Value::List(elems));
+                    push!(Value::List(GcList::new(elems)));
                 }
 
                 Instr::LoadIndex => {
@@ -588,7 +583,7 @@ impl VM {
                     match (obj, idx) {
                         (Value::List(l), Value::Num(i)) => {
                             let i = i as usize;
-                            push!(l.get(i).cloned().unwrap_or(Value::Nil));
+                            push!(l.get(i).unwrap_or(Value::Nil));
                         }
                         _ => return Err(rt_err("LoadIndex: очікується List і Number")),
                     }
@@ -597,10 +592,11 @@ impl VM {
                 Instr::StoreIndex => {
                     let val = pop!(); let idx = pop!(); let obj = pop!();
                     match (obj, idx) {
-                        (Value::List(mut l), Value::Num(i)) => {
+                        (Value::List(l), Value::Num(i)) => {
                             let i = i as usize;
-                            if i < l.len() { l[i] = val; }
-                            push!(Value::List(l));
+                            let mut v = l.to_vec();
+                            if i < v.len() { v[i] = val; }
+                            push!(Value::List(GcList::new(v)));
                         }
                         _ => return Err(rt_err("StoreIndex: очікується List і Number")),
                     }
@@ -785,7 +781,7 @@ impl VM {
             "split" => {
                 if let Some(Value::Str(sep)) = args.into_iter().next() {
                     let parts: Vec<Value> = s.split(sep.as_str()).map(|p| Value::Str(p.to_string())).collect();
-                    Ok(Value::List(parts))
+                    Ok(Value::List(GcList::new(parts)))
                 } else { Err(rt_err("split потребує String")) }
             }
             _ => Err(rt_err(format!("Невідомий метод рядка: {}", method))),
@@ -793,19 +789,21 @@ impl VM {
     }
 
     fn call_list_method(&self, receiver: Value, method: &str, args: Vec<Value>) -> VR<Value> {
-        let mut l = match receiver { Value::List(l) => l, _ => unreachable!() };
+        let l = match receiver { Value::List(l) => l, _ => unreachable!() };
         match method {
-            "len"    => Ok(Value::Num(l.len() as f64)),
-            "push"   => {
+            "len"     => Ok(Value::Num(l.len() as f64)),
+            "push"    => {
                 if let Some(v) = args.into_iter().next() { l.push(v); }
                 Ok(Value::List(l))
             }
-            "pop"    => {
-                let v = l.pop().unwrap_or(Value::Nil);
-                Ok(v)
+            "pop"     => Ok(l.pop().unwrap_or(Value::Nil)),
+            "first"   => Ok(l.first().unwrap_or(Value::Nil)),
+            "last"    => Ok(l.last().unwrap_or(Value::Nil)),
+            "reverse" => Ok(Value::List(l.reverse())),
+            "contains" => {
+                let item = args.into_iter().next().unwrap_or(Value::Nil);
+                Ok(Value::Bool(l.contains(&item)))
             }
-            "first"  => Ok(l.first().cloned().unwrap_or(Value::Nil)),
-            "last"   => Ok(l.last().cloned().unwrap_or(Value::Nil)),
             _ => Err(rt_err(format!("Невідомий метод списку: {}", method))),
         }
     }

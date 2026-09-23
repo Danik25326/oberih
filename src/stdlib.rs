@@ -4,6 +4,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::io::{self, BufRead, Write};
 use crate::vm::{Value, RuntimeError};
+use crate::gc::GcList;
 
 type VR<T> = Result<T, RuntimeError>;
 
@@ -32,7 +33,7 @@ pub fn is_builtin(name: &str) -> bool {
         // Процес
         "exit" | "args" | "env" |
         // Відладка
-        "debug" | "assert" | "panic"
+        "debug" | "assert" | "panic" | "gcstats"
     )
 }
 
@@ -139,7 +140,7 @@ pub fn call_builtin(name: &str, args: Vec<Value>) -> VR<Value> {
             let parts: Vec<Value> = s.split(sep.as_str())
                 .map(|p| Value::Str(p.to_string()))
                 .collect();
-            Ok(Value::List(parts))
+            Ok(Value::List(GcList::new(parts)))
         }
         "strJoin" => {
             let sep = require_str(&args, 0, "strJoin")?;
@@ -199,36 +200,40 @@ pub fn call_builtin(name: &str, args: Vec<Value>) -> VR<Value> {
             let mut list = require_list(&args, 0, "push")?;
             let item = args.into_iter().nth(1).unwrap_or(Value::Nil);
             list.push(item);
-            Ok(Value::List(list))
+            Ok(Value::List(GcList::new(list)))
         }
         "pop" => {
-            let mut list = require_list(&args, 0, "pop")?;
-            let last = list.pop().unwrap_or(Value::Nil);
-            Ok(last)
+            if let Some(Value::List(l)) = args.into_iter().next() {
+                Ok(l.pop().unwrap_or(Value::Nil))
+            } else { Err(rt_err("pop: потрібен List")) }
         }
         "first" => {
-            let list = require_list(&args, 0, "first")?;
-            Ok(list.into_iter().next().unwrap_or(Value::Nil))
+            if let Some(Value::List(l)) = args.into_iter().next() {
+                Ok(l.first().unwrap_or(Value::Nil))
+            } else { Err(rt_err("first: потрібен List")) }
         }
         "last" => {
-            let list = require_list(&args, 0, "last")?;
-            Ok(list.into_iter().last().unwrap_or(Value::Nil))
+            if let Some(Value::List(l)) = args.into_iter().next() {
+                Ok(l.last().unwrap_or(Value::Nil))
+            } else { Err(rt_err("last: потрібен List")) }
         }
         "reverse" => {
             let mut list = require_list(&args, 0, "reverse")?;
             list.reverse();
-            Ok(Value::List(list))
+            Ok(Value::List(GcList::new(list)))
         }
         "contains" => {
-            let list = require_list(&args, 0, "contains")?;
+            let list_val = args.get(0).cloned().unwrap_or(Value::Nil);
             let item = args.into_iter().nth(1).unwrap_or(Value::Nil);
-            Ok(Value::Bool(list.contains(&item)))
+            if let Value::List(l) = list_val {
+                Ok(Value::Bool(l.contains(&item)))
+            } else { Err(rt_err("contains: потрібен List")) }
         }
         "range" => {
             let from = require_num(&args, 0, "range")? as i64;
             let to   = require_num(&args, 1, "range")? as i64;
             let list: Vec<Value> = (from..to).map(|n| Value::Num(n as f64)).collect();
-            Ok(Value::List(list))
+            Ok(Value::List(GcList::new(list)))
         }
 
         // --- Час ---
@@ -254,10 +259,10 @@ pub fn call_builtin(name: &str, args: Vec<Value>) -> VR<Value> {
         }
         "args" => {
             let list: Vec<Value> = std::env::args()
-                .skip(2) // пропускаємо "oberih" і "run"
+                .skip(3) // пропускаємо "oberih", "run", "file.obh"
                 .map(Value::Str)
                 .collect();
-            Ok(Value::List(list))
+            Ok(Value::List(GcList::new(list)))
         }
         "env" => {
             let key = require_str(&args, 0, "env")?;
@@ -291,6 +296,13 @@ pub fn call_builtin(name: &str, args: Vec<Value>) -> VR<Value> {
             Err(rt_err(format!("panic: {}", msg)))
         }
 
+        "gcstats" => {
+            let stats = crate::gc::gc_stats();
+            println!("GC: allocs={} drops={} live={}",
+                stats.total_allocs, stats.total_drops, stats.live_objects);
+            Ok(Value::Nil)
+        }
+
         _ => Err(rt_err(format!("Невідома вбудована функція: '{}'", name))),
     }
 }
@@ -317,7 +329,7 @@ fn require_num(args: &[Value], idx: usize, fn_name: &str) -> VR<f64> {
 
 fn require_list(args: &[Value], idx: usize, fn_name: &str) -> VR<Vec<Value>> {
     match args.get(idx) {
-        Some(Value::List(l)) => Ok(l.clone()),
+        Some(Value::List(l)) => Ok(l.to_vec()),
         Some(other) => Err(rt_err(format!("{}: аргумент {} має бути List, отримано {}", fn_name, idx, other))),
         None        => Err(rt_err(format!("{}: потрібен аргумент {}", fn_name, idx))),
     }

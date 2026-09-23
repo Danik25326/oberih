@@ -120,22 +120,25 @@ impl TyEnv {
 // ---------------------------------------------------------------------------
 
 pub struct Typechecker {
-    /// fn name -> (param types, return type)
-    fn_sigs:      HashMap<String, (Vec<Ty>, Ty)>,
-    /// struct name -> field name -> type
-    struct_fields: HashMap<String, HashMap<String, Ty>>,
-    /// enum name -> variants
-    enum_variants: HashMap<String, Vec<String>>,
-    errors:        Vec<TypeError>,
+    fn_sigs:        HashMap<String, (Vec<Ty>, Ty)>,
+    struct_fields:  HashMap<String, HashMap<String, Ty>>,
+    enum_variants:  HashMap<String, Vec<String>>,
+    /// struct_type_params: struct name -> [param names]
+    struct_type_params: HashMap<String, Vec<String>>,
+    /// var_generic_map: variable name -> {T -> concrete type}
+    var_generic_map: HashMap<String, HashMap<String, Ty>>,
+    errors:         Vec<TypeError>,
 }
 
 impl Typechecker {
     pub fn new() -> Self {
         Typechecker {
-            fn_sigs:       HashMap::new(),
-            struct_fields: HashMap::new(),
-            enum_variants: HashMap::new(),
-            errors:        Vec::new(),
+            fn_sigs:            HashMap::new(),
+            struct_fields:      HashMap::new(),
+            enum_variants:      HashMap::new(),
+            struct_type_params: HashMap::new(),
+            var_generic_map:    HashMap::new(),
+            errors:             Vec::new(),
         }
     }
 
@@ -162,6 +165,10 @@ impl Typechecker {
                         fields.insert(field.name.clone(), ty_from_ast(&field.ty));
                     }
                     self.struct_fields.insert(s.name.clone(), fields);
+                    // Реєструємо generic параметри struct
+                    if !s.type_params.is_empty() {
+                        self.struct_type_params.insert(s.name.clone(), s.type_params.clone());
+                    }
                 }
                 Item::Enum(e) => {
                     self.enum_variants.insert(e.name.clone(), e.variants.clone());
@@ -228,6 +235,19 @@ impl Typechecker {
         match stmt {
             Stmt::Let { name, value, span: _ } => {
                 let ty = self.infer_expr(value, env);
+                // Якщо це generic struct — зберігаємо прив'язку T -> конкретний тип
+                if let Expr::Call { callee, args, .. } = value {
+                    if let Expr::Ident(struct_name, _) = callee.as_ref() {
+                        if let Some(type_params) = self.struct_type_params.get(struct_name.as_str()).cloned() {
+                            let mut generic_map = HashMap::new();
+                            for (param, arg) in type_params.iter().zip(args.iter()) {
+                                let arg_ty = self.infer_expr(arg, env);
+                                generic_map.insert(param.clone(), arg_ty);
+                            }
+                            self.var_generic_map.insert(name.clone(), generic_map);
+                        }
+                    }
+                }
                 env.define(name, ty);
             }
 
@@ -407,10 +427,13 @@ impl Typechecker {
 
             Expr::Field { object, field, span } => {
                 let obj_ty = self.infer_expr(object, env);
+                let var_name = if let Expr::Ident(n, _) = object.as_ref() {
+                    Some(n.clone())
+                } else { None };
                 match &obj_ty {
                     Ty::Struct(name) => {
                         if let Some(fields) = self.struct_fields.get(name.as_str()) {
-                            fields.get(field.as_str()).cloned().unwrap_or_else(|| {
+                            let field_ty = fields.get(field.as_str()).cloned().unwrap_or_else(|| {
                                 self.errors.push(TypeError {
                                     message: format!(
                                         "Struct '{}' не має поля '{}'",
@@ -419,7 +442,17 @@ impl Typechecker {
                                     line: span.line, col: span.col,
                                 });
                                 Ty::Unknown
-                            })
+                            });
+                            if let Ty::Generic(ref param) = field_ty {
+                                if let Some(ref var) = var_name {
+                                    if let Some(gmap) = self.var_generic_map.get(var.as_str()) {
+                                        if let Some(concrete) = gmap.get(param.as_str()) {
+                                            return concrete.clone();
+                                        }
+                                    }
+                                }
+                            }
+                            field_ty
                         } else {
                             Ty::Unknown
                         }
