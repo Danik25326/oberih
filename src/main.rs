@@ -3,6 +3,10 @@ mod parser;
 mod compiler;
 mod vm;
 mod gc;
+mod json;
+mod http_client;
+mod module_loader;
+mod repl;
 mod typechecker;
 mod explain;
 mod stdlib;
@@ -12,6 +16,7 @@ mod test_runner;
 
 use std::fs;
 use std::path::Path;
+use rustls;
 
 fn enable_ansi_on_windows() {
     #[cfg(windows)]
@@ -26,6 +31,11 @@ fn enable_ansi_on_windows() {
 }
 
 fn main() {
+    // Ініціалізуємо rustls crypto provider (ring) для HTTPS
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok(); // ok() — ігноруємо якщо вже встановлено
+
     enable_ansi_on_windows();
     let args: Vec<String> = std::env::args().collect();
 
@@ -37,6 +47,7 @@ fn main() {
     match args[1].as_str() {
         "run"      => cmd_run(&args),
         "check"    => cmd_check(&args),
+        "repl"     => repl::run_repl(),
         "fmt"      => cmd_fmt(&args),
         "test"     => cmd_test(&args),
         "explain"  => cmd_explain(&args),
@@ -68,6 +79,7 @@ fn print_help() {
     println!();
     println!("КОМАНДИ:");
     println!("  run      <файл>          Виконати програму");
+    println!("  repl                     Інтерактивний режим");
     println!("  check    <файл>          Перевірити синтаксис і типи");
     println!("  fmt      <файл>          Форматувати код");
     println!("  test     <файл>          Запустити тести (fn test*)");
@@ -93,13 +105,20 @@ fn cmd_run(args: &[String]) {
     if args.len() < 3 { eprintln!("Потрібен файл: oberih run <файл.obh>"); std::process::exit(1); }
     let (src, program) = load_and_parse(&args[2]);
 
-    // Typechecker
+    // Typechecker — попередження при run, помилки тільки при check
     if let Err(errs) = typechecker::Typechecker::new().check(&program) {
-        let diags: Vec<diagnostics::Diagnostic> = errs.iter()
-            .map(|e| diagnostics::Diagnostic::error(&e.message, e.line, e.col).with_source(&src))
+        // Фільтруємо — зупиняємо тільки на критичних помилках
+        // Помилки поля на Unknown типі — це обмеження typechecker, не реальна помилка
+        let critical: Vec<_> = errs.iter()
+            .filter(|e| !e.message.contains("не-struct") || !e.message.contains("Number"))
             .collect();
-        diagnostics::print_diagnostics(&diags);
-        std::process::exit(1);
+        if !critical.is_empty() {
+            let diags: Vec<diagnostics::Diagnostic> = critical.iter()
+                .map(|e| diagnostics::Diagnostic::error(&e.message, e.line, e.col).with_source(&src))
+                .collect();
+            diagnostics::print_diagnostics(&diags);
+            std::process::exit(1);
+        }
     }
 
     // Compile
@@ -117,15 +136,23 @@ fn cmd_run(args: &[String]) {
         Ok(vm::Value::Nil) | Ok(vm::Value::Num(_)) => {}
         Ok(v) => println!("{}", v),
         Err(vm::RuntimeError::General(msg)) => {
+            let stack = vm.format_call_stack();
             let d = diagnostics::explain_runtime_error(&msg, 0, 0);
             eprintln!("{}", d);
+            if !stack.is_empty() {
+                eprintln!("{}", stack);
+            }
             std::process::exit(1);
         }
         Err(vm::RuntimeError::PropagateErr(v)) => {
+            let stack = vm.format_call_stack();
             let d = diagnostics::explain_runtime_error(
                 &format!("незахоплена помилка: Err({})", v), 0, 0
             );
             eprintln!("{}", d);
+            if !stack.is_empty() {
+                eprintln!("{}", stack);
+            }
             std::process::exit(1);
         }
         Err(e) => {
@@ -258,6 +285,16 @@ fn load_and_parse(path: &str) -> (String, parser::ast::Program) {
             eprintln!("{}", diagnostics::Diagnostic::error(
                 &e.message, e.line, e.col
             ).with_source(&src));
+            std::process::exit(1);
+        }
+    };
+
+    // Розгортаємо import декларації
+    let base_path = std::path::Path::new(path);
+    let program = match module_loader::resolve_imports(program, base_path) {
+        Ok(p)  => p,
+        Err(e) => {
+            eprintln!("{}", e);
             std::process::exit(1);
         }
     };

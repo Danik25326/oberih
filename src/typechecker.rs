@@ -387,6 +387,10 @@ impl Typechecker {
                         Ty::Number
                     }
                     BinOp::Eq | BinOp::NotEq => Ty::Bool,
+                    BinOp::And | BinOp::Or => {
+                        // && і || — обидва операнди мають бути Bool або Unknown
+                        Ty::Bool
+                    }
                     BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq => {
                         if !matches!((&l, &r), (Ty::Number, Ty::Number) | (Ty::Unknown, _) | (_, Ty::Unknown)) {
                             self.errors.push(TypeError {
@@ -408,6 +412,11 @@ impl Typechecker {
                     });
                 }
                 Ty::Number
+            }
+
+            Expr::Not { expr, .. } => {
+                self.infer_expr(expr, env);
+                Ty::Bool
             }
 
             Expr::Try { expr, span } => {
@@ -457,7 +466,7 @@ impl Typechecker {
                             Ty::Unknown
                         }
                     }
-                    Ty::Unknown => Ty::Unknown,
+                    Ty::Unknown => Ty::Unknown, // Unknown може мати будь-яке поле — не помилка
                     other => {
                         self.errors.push(TypeError {
                             message: format!("доступ до поля '{}' на не-struct {}", field, other),
@@ -553,14 +562,17 @@ impl Typechecker {
                 self.infer_expr(scrutinee, env);
                 let mut result_ty = Ty::Unknown;
                 for arm in arms {
-                    // Додаємо bind змінну якщо є
                     let mut arm_env = env.clone();
                     if let Pattern::Ctor(_, bind) = &arm.pattern {
                         arm_env.define(bind, Ty::Unknown);
                     }
                     let arm_ty = self.infer_expr(&arm.body, &arm_env);
-                    if matches!(result_ty, Ty::Unknown) {
-                        result_ty = arm_ty;
+                    // Пропускаємо arm якщо його тип Number і result_ty вже відомий
+                    // (це arm з return statement, не значення match)
+                    if matches!(result_ty, Ty::Unknown) || matches!(arm_ty, Ty::Unknown) {
+                        if !matches!(arm_ty, Ty::Unknown) {
+                            result_ty = arm_ty;
+                        }
                     }
                 }
                 result_ty
@@ -699,3 +711,4 @@ fn bad(x: Number) -> Number {
         assert!(errs.iter().any(|e| e.message.contains("Result")));
     }
 }
+

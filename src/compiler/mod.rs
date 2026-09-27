@@ -347,6 +347,8 @@ impl Compiler {
                     BinOp::Gt    => Instr::Gt,
                     BinOp::LtEq  => Instr::LtEq,
                     BinOp::GtEq  => Instr::GtEq,
+                    BinOp::And   => Instr::And,
+                    BinOp::Or    => Instr::Or,
                 };
                 ctx.emit(instr);
             }
@@ -354,6 +356,11 @@ impl Compiler {
             Expr::Neg { expr, .. } => {
                 self.compile_expr(expr, ctx)?;
                 ctx.emit(Instr::Neg);
+            }
+
+            Expr::Not { expr, .. } => {
+                self.compile_expr(expr, ctx)?;
+                ctx.emit(Instr::Not);
             }
 
             Expr::Try { expr, .. } => {

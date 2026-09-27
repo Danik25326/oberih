@@ -23,6 +23,11 @@ pub enum Instr {
     Div,
     Neg,
 
+    // --- Логічні ---
+    And,
+    Or,
+    Not,
+
     // --- Порівняння ---
     Eq,
     NotEq,

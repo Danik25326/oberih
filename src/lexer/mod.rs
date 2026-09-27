@@ -51,7 +51,12 @@ pub enum Token {
     Ok,
     Err,
 
-    // Оператори
+    // Логічні оператори
+    And,        // &&
+    Or,         // ||
+    Not,        // !
+
+    // Арифметичні оператори
     Plus,       // +
     Minus,      // -
     Star,       // *
@@ -232,16 +237,34 @@ impl<'a> Lexer<'a> {
                     Token::Assign
                 }
             }
+            '&' => {
+                if self.peek() == Some('&') {
+                    self.advance();
+                    Token::And
+                } else {
+                    return Err(LexError {
+                        message: "Очікувалось '&&'".into(),
+                        line: span.line, col: span.col,
+                    });
+                }
+            }
+            '|' => {
+                if self.peek() == Some('|') {
+                    self.advance();
+                    Token::Or
+                } else {
+                    return Err(LexError {
+                        message: "Очікувалось '||'".into(),
+                        line: span.line, col: span.col,
+                    });
+                }
+            }
             '!' => {
                 if self.peek() == Some('=') {
                     self.advance();
                     Token::NotEq
                 } else {
-                    return Err(LexError {
-                        message: format!("Неочікуваний символ '!'"),
-                        line: span.line,
-                        col: span.col,
-                    });
+                    Token::Not
                 }
             }
             '<' => {

@@ -3,9 +3,11 @@ name = "oberih"
 version = "0.1.0"
 edition = "2021"
 
-# Нуль зовнішніх залежностей.
-# Все — стандартна бібліотека Rust.
 [dependencies]
+# rustls — TLS без OpenSSL залежності, чистий Rust
+rustls = { version = "0.23", features = ["ring"] }
+rustls-pki-types = "1"
+webpki-roots = "0.26"
 
 [[bin]]
 name = "oberih"

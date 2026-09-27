@@ -533,7 +533,39 @@ impl Parser {
     // --- expr (Pratt parser) ---
 
     fn parse_expr(&mut self) -> PR<Expr> {
-        self.parse_comparison()
+        self.parse_logical_or()
+    }
+
+    fn parse_logical_or(&mut self) -> PR<Expr> {
+        let span = self.span();
+        let mut left = self.parse_logical_and()?;
+        while self.check(&Token::Or) {
+            self.advance();
+            let right = self.parse_logical_and()?;
+            left = Expr::BinOp {
+                op: BinOp::Or,
+                left: Box::new(left),
+                right: Box::new(right),
+                span: span.clone(),
+            };
+        }
+        Ok(left)
+    }
+
+    fn parse_logical_and(&mut self) -> PR<Expr> {
+        let span = self.span();
+        let mut left = self.parse_comparison()?;
+        while self.check(&Token::And) {
+            self.advance();
+            let right = self.parse_comparison()?;
+            left = Expr::BinOp {
+                op: BinOp::And,
+                left: Box::new(left),
+                right: Box::new(right),
+                span: span.clone(),
+            };
+        }
+        Ok(left)
     }
 
     fn parse_comparison(&mut self) -> PR<Expr> {
@@ -695,7 +727,15 @@ impl Parser {
                     let arm_span = self.span();
                     let pattern = self.parse_pattern()?;
                     self.expect(&Token::FatArrow)?;
-                    let body = self.parse_expr()?;
+                    // Arm body: або блок { ... } або простий вираз
+                    let body = if self.check(&Token::LBrace) {
+                        self.advance();
+                        let stmts = self.parse_block()?;
+                        self.expect(&Token::RBrace)?;
+                        block_to_expr(stmts, &arm_span)?
+                    } else {
+                        self.parse_expr()?
+                    };
                     arms.push(MatchArm { pattern, body, span: arm_span });
                     self.eat(&Token::Comma);
                 }
@@ -735,6 +775,11 @@ impl Parser {
                     ],
                     span,
                 })
+            }
+            Token::Not => {
+                self.advance();
+                let expr = self.parse_primary()?;
+                Ok(Expr::Not { expr: Box::new(expr), span })
             }
             Token::Minus => {
                 self.advance();

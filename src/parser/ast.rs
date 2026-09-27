@@ -212,6 +212,9 @@ pub enum Expr {
     // Унарний мінус
     Neg { expr: Box<Expr>, span: Span },
 
+    // Логічне заперечення
+    Not { expr: Box<Expr>, span: Span },
+
     // ? оператор
     Try { expr: Box<Expr>, span: Span },
 
@@ -248,6 +251,7 @@ impl Expr {
             Expr::ResultCtor { span, .. } => span,
             Expr::BinOp { span, .. } => span,
             Expr::Neg { span, .. }   => span,
+            Expr::Not { span, .. }   => span,
             Expr::Try { span, .. }   => span,
             Expr::Call { span, .. }  => span,
             Expr::Field { span, .. } => span,
@@ -265,6 +269,7 @@ impl Expr {
 pub enum BinOp {
     Add, Sub, Mul, Div,
     Eq, NotEq, Lt, Gt, LtEq, GtEq,
+    And, Or,
 }
 
 #[derive(Debug, Clone)]

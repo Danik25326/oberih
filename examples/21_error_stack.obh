@@ -1,0 +1,24 @@
+// 21_error_stack.obh — демонстрація стеку викликів при помилках
+// Запуск: oberih run examples/21_error_stack.obh
+
+fn level3() -> Number {
+    // Ділення на нуль — викличе RuntimeError
+    let x = 10
+    let y = 0
+    return x / y
+}
+
+fn level2() -> Number {
+    return level3()
+}
+
+fn level1() -> Number {
+    return level2()
+}
+
+fn main() -> Number {
+    println("Демонстрація стеку викликів:")
+    println("main -> level1 -> level2 -> level3 -> ділення на нуль")
+    println("")
+    return level1()
+}

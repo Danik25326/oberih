@@ -1,41 +1,76 @@
-// 19_http.obh — HTTP запити в Oberih
-//
-// Запуск: oberih run examples/19_http.obh
-// Потрібен локальний сервер або доступний HTTP endpoint
+// 19_http.obh — HTTPS + JSON в Oberih
 
-resilient fn getJsonPlaceholder() -> String
-    deadline(5s)
+resilient fn getTodo(id: Number) -> String
+    deadline(10s)
     retries(2)
-    fallback(offlineData)
+    fallback(offlineTodo)
 {
-    let resp = httpGet("http://jsonplaceholder.typicode.com/todos/1")?
+    let url = "https://jsonplaceholder.typicode.com/todos/" + toString(id)
+    let resp = httpGet(url)?
     return resp.body
 }
 
-fn offlineData() -> String {
-    return "offline: дані недоступні"
+fn offlineTodo(id: Number) -> String {
+    return "{\"error\": \"offline\"}"
 }
 
-resilient fn postData(url: String, body: String) -> String
-    deadline(5s)
-    retries(1)
+resilient fn getPost(id: Number) -> String
+    deadline(10s)
+    retries(2)
+    fallback(offlinePost)
 {
-    let resp = httpPost(url, body)?
+    let url = "https://jsonplaceholder.typicode.com/posts/" + toString(id)
+    let resp = httpGet(url)?
     return resp.body
+}
+
+fn offlinePost(id: Number) -> String {
+    return "{\"error\": \"offline\"}"
+}
+
+fn parseTodo(raw: String) -> Number {
+    let parsed = jsonParse(raw)
+    let todo = match parsed {
+        Ok(data) => data,
+        Err(e)   => {
+            println("Помилка парсингу: " + e)
+            return 1
+        }
+    }
+    println("title:     " + toString(todo.title))
+    println("completed: " + toString(todo.completed))
+    return 0
+}
+
+fn parsePost(raw: String) -> Number {
+    let parsed = jsonParse(raw)
+    let post = match parsed {
+        Ok(data) => data,
+        Err(e)   => {
+            println("Помилка парсингу: " + e)
+            return 1
+        }
+    }
+    println("title: " + toString(post.title))
+    return 0
 }
 
 fn main() -> Number {
-    println("=== Oberih HTTP Client ===")
+    println("=== Oberih HTTPS + JSON ===")
     println("")
 
-    // GET запит
-    println("GET jsonplaceholder.typicode.com/todos/1:")
-    let data = getJsonPlaceholder()
-    println(data)
+    println("GET https://jsonplaceholder.typicode.com/todos/1:")
+    let raw = getTodo(1)
+    println(raw)
+    println("")
+    parseTodo(raw)
     println("")
 
-    // Статистика GC
+    println("GET https://jsonplaceholder.typicode.com/posts/1:")
+    let postRaw = getPost(1)
+    parsePost(postRaw)
+    println("")
+
     gcstats()
-
     return 0
 }

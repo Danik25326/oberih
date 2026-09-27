@@ -25,6 +25,7 @@ cargo build --release
 
 ```bash
 oberih run      <файл>          — виконати програму
+oberih repl                     — інтерактивний режим
 oberih check    <файл>          — перевірити синтаксис і типи
 oberih fmt      <файл>          — форматувати код
 oberih test     <файл>          — запустити тести (fn test*)
@@ -96,8 +97,17 @@ let r1 = h1.join()
 let resp = httpGet("http://api.example.com/data")?
 println(resp.body)
 
-// WeakRef для циклічних структур
-let weak = weakRef(myList)
+// Логічні оператори
+let a = true && false   // false
+let b = true || false   // true
+let c = !true           // false
+
+// Модульна система
+import "lib/math.obh"
+import "lib/strings.obh"
+
+let result = add(10, 5)        // з math.obh
+let s = capitalize("oberih")   // з strings.obh
 let result = upgrade(weak)
 
 // Вбудований тест-ранер
@@ -109,7 +119,8 @@ fn testAdd() -> Bool { return add(1, 2) == 3 }
 | Категорія | Функції |
 |-----------|---------|
 | IO | `print`, `println`, `readLine`, `readFile`, `writeFile`, `appendFile` |
-| HTTP | `httpGet`, `httpPost`, `httpPut`, `httpDelete` |
+| HTTP/HTTPS | `httpGet`, `httpPost`, `httpPut`, `httpDelete` (http:// і https://) |
+| JSON | `jsonParse`, `jsonStringify`, `jsonPretty` |
 | Рядки | `strLen`, `strTrim`, `strUpper`, `strLower`, `strSplit`, `strJoin`, `strReplace`, `strSlice`, `strContains`, `strStartsWith`, `strEndsWith` |
 | Числа | `floor`, `ceil`, `round`, `abs`, `sqrt`, `pow`, `min`, `max` |
 | Списки | `len`, `push`, `pop`, `first`, `last`, `reverse`, `contains`, `range` |
@@ -135,7 +146,12 @@ fn testAdd() -> Bool { return add(1, 2) == 3 }
 | explain (Shared Budget tree) | ✅ |
 | Garbage collector (Arc reference counting) | ✅ |
 | WeakRef (циклічні посилання) | ✅ |
-| HTTP клієнт | ✅ |
+| HTTP клієнт (http://) | ✅ |
+| HTTPS клієнт (https:// via rustls) | ✅ |
+| JSON парсер і серіалізатор | ✅ |
+| Модульна система (import) | ✅ |
+| Логічні оператори (&& \|\| !) | ✅ |
+| REPL (інтерактивний режим) | ✅ |
 | Форматер (oberih fmt) | ✅ |
 | Тест-ранер (oberih test) | ✅ |
 | Людські повідомлення про помилки | ✅ |

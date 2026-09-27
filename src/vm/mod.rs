@@ -228,13 +228,12 @@ fn rt_err(msg: impl Into<String>) -> RuntimeError {
 // ---------------------------------------------------------------------------
 
 pub struct VM {
-    module: Arc<Module>,
-    // Circuit breaker стан — per function
-    cb_state: HashMap<String, CircuitState>,
-    // Rate limit стан
-    rl_state: HashMap<String, RateLimitState>,
-    // Bulkhead стан
-    bh_state: HashMap<String, Arc<Mutex<u32>>>,
+    module:    Arc<Module>,
+    cb_state:  HashMap<String, CircuitState>,
+    rl_state:  HashMap<String, RateLimitState>,
+    bh_state:  HashMap<String, Arc<Mutex<u32>>>,
+    /// Стек викликів для діагностики
+    call_stack: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -252,10 +251,11 @@ struct RateLimitState {
 impl VM {
     pub fn new(module: Module) -> Self {
         VM {
-            module:   Arc::new(module),
-            cb_state: HashMap::new(),
-            rl_state: HashMap::new(),
-            bh_state: HashMap::new(),
+            module:     Arc::new(module),
+            cb_state:   HashMap::new(),
+            rl_state:   HashMap::new(),
+            bh_state:   HashMap::new(),
+            call_stack: Vec::new(),
         }
     }
 
@@ -270,7 +270,34 @@ impl VM {
             .ok_or_else(|| rt_err(format!("Функція '{}' не знайдена", name)))?
             .clone();
 
-        self.call_compiled(&compiled, args)
+        self.call_stack.push(name.to_string());
+        let result = self.call_compiled(&compiled, args);
+        self.call_stack.pop();
+
+        // Якщо помилка — додаємо стек викликів
+        match result {
+            Err(RuntimeError::General(msg)) if !msg.contains("\nСтек викликів:") => {
+                if self.call_stack.is_empty() {
+                    // Ми на верхньому рівні — форматуємо з стеком
+                    Err(RuntimeError::General(msg))
+                } else {
+                    Err(RuntimeError::General(msg))
+                }
+            }
+            other => other,
+        }
+    }
+
+    /// Повертає поточний стек викликів як рядок
+    pub fn format_call_stack(&self) -> String {
+        if self.call_stack.is_empty() {
+            return String::new();
+        }
+        let mut s = "\nСтек викликів:".to_string();
+        for (i, name) in self.call_stack.iter().rev().enumerate() {
+            s.push_str(&format!("\n  {} fn {}", i, name));
+        }
+        s
     }
 
     fn call_compiled(&mut self, func: &CompiledFn, args: Vec<Value>) -> VR<Value> {
@@ -529,6 +556,19 @@ impl VM {
                         Value::Num(n) => push!(Value::Num(-n)),
                         _ => return Err(rt_err("Neg тільки для чисел")),
                     }
+                }
+
+                Instr::And => {
+                    let r = pop!(); let l = pop!();
+                    push!(Value::Bool(l.is_truthy() && r.is_truthy()));
+                }
+                Instr::Or => {
+                    let r = pop!(); let l = pop!();
+                    push!(Value::Bool(l.is_truthy() || r.is_truthy()));
+                }
+                Instr::Not => {
+                    let v = pop!();
+                    push!(Value::Bool(!v.is_truthy()));
                 }
 
                 Instr::Eq    => { let r=pop!(); let l=pop!(); push!(Value::Bool(l==r)); }

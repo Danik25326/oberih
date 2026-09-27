@@ -2,8 +2,7 @@
 /// Всі вбудовані функції — без зовнішніх залежностей, тільки std.
 
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::io::{self, BufRead, Write, Read};
-use std::net::TcpStream;
+use std::io::{self, BufRead, Write};
 use crate::vm::{Value, RuntimeError};
 use crate::gc::GcList;
 
@@ -20,6 +19,8 @@ pub fn is_builtin(name: &str) -> bool {
         "print" | "println" | "readLine" | "readFile" | "writeFile" | "appendFile" |
         // HTTP
         "httpGet" | "httpPost" | "httpPut" | "httpDelete" |
+        // JSON
+        "jsonParse" | "jsonStringify" | "jsonPretty" |
         // Конвертація
         "toString" | "toNumber" | "toBool" |
         // Рядки
@@ -93,34 +94,55 @@ pub fn call_builtin(name: &str, args: Vec<Value>) -> VR<Value> {
             }
         }
 
-        // --- HTTP ---
+        // --- JSON ---
+        "jsonParse" => {
+            let s = require_str(&args, 0, "jsonParse")?;
+            match crate::json::json_parse(&s) {
+                Ok(v)  => Ok(Value::Ok(Box::new(v))),
+                Err(e) => Ok(Value::Err(Box::new(Value::Str(e)))),
+            }
+        }
+        "jsonStringify" => {
+            let v = args.into_iter().next().unwrap_or(Value::Nil);
+            Ok(Value::Str(crate::json::json_stringify(&v)))
+        }
+        "jsonPretty" => {
+            let v = args.into_iter().next().unwrap_or(Value::Nil);
+            Ok(Value::Str(crate::json::json_stringify_pretty(&v)))
+        }
+
+        // --- HTTP / HTTPS ---
         "httpGet" => {
-            let url = require_str(&args, 0, "httpGet")?;
-            match http_request("GET", &url, None, args.get(1)) {
-                Ok(resp)  => Ok(Value::Ok(Box::new(resp))),
-                Err(e)    => Ok(Value::Err(Box::new(Value::Str(e)))),
+            let url     = require_str(&args, 0, "httpGet")?;
+            let timeout = args.get(1).and_then(|v| if let Value::Num(n) = v { Some(*n as u64) } else { None }).unwrap_or(10);
+            match crate::http_client::http_request("GET", &url, None, timeout) {
+                Ok(resp) => Ok(Value::Ok(Box::new(crate::http_client::response_to_value(resp)))),
+                Err(e)   => Ok(Value::Err(Box::new(Value::Str(e)))),
             }
         }
         "httpPost" => {
-            let url  = require_str(&args, 0, "httpPost")?;
-            let body = args.get(1).map(|v| v.to_string()).unwrap_or_default();
-            match http_request("POST", &url, Some(&body), args.get(2)) {
-                Ok(resp) => Ok(Value::Ok(Box::new(resp))),
+            let url     = require_str(&args, 0, "httpPost")?;
+            let body    = args.get(1).map(|v| v.to_string()).unwrap_or_default();
+            let timeout = args.get(2).and_then(|v| if let Value::Num(n) = v { Some(*n as u64) } else { None }).unwrap_or(10);
+            match crate::http_client::http_request("POST", &url, Some(&body), timeout) {
+                Ok(resp) => Ok(Value::Ok(Box::new(crate::http_client::response_to_value(resp)))),
                 Err(e)   => Ok(Value::Err(Box::new(Value::Str(e)))),
             }
         }
         "httpPut" => {
-            let url  = require_str(&args, 0, "httpPut")?;
-            let body = args.get(1).map(|v| v.to_string()).unwrap_or_default();
-            match http_request("PUT", &url, Some(&body), args.get(2)) {
-                Ok(resp) => Ok(Value::Ok(Box::new(resp))),
+            let url     = require_str(&args, 0, "httpPut")?;
+            let body    = args.get(1).map(|v| v.to_string()).unwrap_or_default();
+            let timeout = args.get(2).and_then(|v| if let Value::Num(n) = v { Some(*n as u64) } else { None }).unwrap_or(10);
+            match crate::http_client::http_request("PUT", &url, Some(&body), timeout) {
+                Ok(resp) => Ok(Value::Ok(Box::new(crate::http_client::response_to_value(resp)))),
                 Err(e)   => Ok(Value::Err(Box::new(Value::Str(e)))),
             }
         }
         "httpDelete" => {
-            let url = require_str(&args, 0, "httpDelete")?;
-            match http_request("DELETE", &url, None, args.get(1)) {
-                Ok(resp) => Ok(Value::Ok(Box::new(resp))),
+            let url     = require_str(&args, 0, "httpDelete")?;
+            let timeout = args.get(1).and_then(|v| if let Value::Num(n) = v { Some(*n as u64) } else { None }).unwrap_or(10);
+            match crate::http_client::http_request("DELETE", &url, None, timeout) {
+                Ok(resp) => Ok(Value::Ok(Box::new(crate::http_client::response_to_value(resp)))),
                 Err(e)   => Ok(Value::Err(Box::new(Value::Str(e)))),
             }
         }
@@ -370,80 +392,6 @@ pub fn call_builtin(name: &str, args: Vec<Value>) -> VR<Value> {
 
         _ => Err(rt_err(format!("Невідома вбудована функція: '{}'", name))),
     }
-}
-
-// ---------------------------------------------------------------------------
-// HTTP клієнт — чистий TCP, нуль залежностей
-// ---------------------------------------------------------------------------
-
-fn parse_url(url: &str) -> Result<(String, u16, String), String> {
-    let url = url.trim_start_matches("http://");
-    let (host_port, path) = if let Some(idx) = url.find('/') {
-        (&url[..idx], url[idx..].to_string())
-    } else {
-        (url, "/".to_string())
-    };
-    let (host, port) = if let Some(idx) = host_port.rfind(':') {
-        let port = host_port[idx+1..].parse::<u16>()
-            .map_err(|_| format!("Невірний порт: {}", &host_port[idx+1..]))?;
-        (host_port[..idx].to_string(), port)
-    } else {
-        (host_port.to_string(), 80)
-    };
-    Ok((host, port, path))
-}
-
-fn http_request(
-    method:  &str,
-    url:     &str,
-    body:    Option<&str>,
-    _headers: Option<&Value>,
-) -> Result<Value, String> {
-    if !url.starts_with("http://") {
-        return Err(format!("Тільки http:// підтримується: {}", url));
-    }
-
-    let (host, port, path) = parse_url(url)?;
-
-    let mut stream = TcpStream::connect(format!("{}:{}", host, port))
-        .map_err(|e| format!("З'єднання невдале: {}", e))?;
-
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))
-        .map_err(|e| e.to_string())?;
-
-    let body_str = body.unwrap_or("");
-    let request = format!(
-        "{} {} HTTP/1.1\r\nHost: {}\r\nContent-Length: {}\r\nConnection: close\r\nUser-Agent: Oberih/0.3\r\n\r\n{}",
-        method, path, host, body_str.len(), body_str
-    );
-
-    stream.write_all(request.as_bytes())
-        .map_err(|e| format!("Помилка запиту: {}", e))?;
-
-    let mut response = String::new();
-    stream.read_to_string(&mut response)
-        .map_err(|e| format!("Помилка відповіді: {}", e))?;
-
-    // Розбираємо HTTP відповідь
-    let (head, body_resp) = if let Some(idx) = response.find("\r\n\r\n") {
-        (&response[..idx], &response[idx+4..])
-    } else {
-        (response.as_str(), "")
-    };
-
-    // Статус код
-    let status: u16 = head.lines().next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-
-    // Повертаємо struct з status і body
-    let mut fields = std::collections::HashMap::new();
-    fields.insert("status".to_string(), Value::Num(status as f64));
-    fields.insert("body".to_string(),   Value::Str(body_resp.to_string()));
-    fields.insert("ok".to_string(),     Value::Bool(status >= 200 && status < 300));
-
-    Ok(Value::Struct(crate::vm::OberihStruct::new("HttpResponse".to_string(), fields)))
 }
 
 // ---------------------------------------------------------------------------

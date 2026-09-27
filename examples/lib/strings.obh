@@ -1,0 +1,39 @@
+// examples/lib/strings.obh — рядкова бібліотека
+// Імпортується через: import "lib/strings.obh"
+
+fn repeat(s: String, n: Number) -> String {
+    let result = ""
+    let i = 0
+    while (i < n) {
+        result = result + s
+        i = i + 1
+    }
+    return result
+}
+
+fn padLeft(s: String, width: Number, char: String) -> String {
+    let result = s
+    while (strLen(result) < width) {
+        result = char + result
+    }
+    return result
+}
+
+fn padRight(s: String, width: Number, char: String) -> String {
+    let result = s
+    while (strLen(result) < width) {
+        result = result + char
+    }
+    return result
+}
+
+fn capitalize(s: String) -> String {
+    if (strLen(s) == 0) { return s }
+    let first = strUpper(strSlice(s, 0, 1))
+    let rest = strSlice(s, 1, strLen(s))
+    return first + rest
+}
+
+fn isEmpty(s: String) -> Bool {
+    return strLen(strTrim(s)) == 0
+}

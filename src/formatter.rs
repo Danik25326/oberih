@@ -203,11 +203,13 @@ impl Formatter {
                     BinOp::Eq    => "==", BinOp::NotEq => "!=",
                     BinOp::Lt    => "<",  BinOp::Gt    => ">",
                     BinOp::LtEq  => "<=", BinOp::GtEq  => ">=",
+                    BinOp::And   => "&&", BinOp::Or    => "||",
                 };
                 format!("{} {} {}", l, op_str, r)
             }
 
             Expr::Neg { expr, .. } => format!("-{}", self.fmt_expr(expr)),
+            Expr::Not { expr, .. } => format!("!{}", self.fmt_expr(expr)),
 
             Expr::Try { expr, .. } => format!("{}?", self.fmt_expr(expr)),
 
