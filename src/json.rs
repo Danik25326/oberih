@@ -6,7 +6,7 @@
 ///   jsonStringify(value) -> String
 
 use crate::vm::{Value, OberihStruct};
-use crate::gc::GcList;
+use crate::gc::{GcList, GcMap, MapKey, OMap};
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
@@ -187,13 +187,14 @@ impl JsonParser {
         Ok(Value::List(GcList::new(elems)))
     }
 
+    /// JSON-об'єкт -> Map (порядок ключів як у документі; дублікат ключа — виграє останній).
     fn parse_object(&mut self) -> Result<Value, String> {
         self.expect('{')?;
         self.skip_ws();
-        let mut fields: HashMap<String, Value> = HashMap::new();
+        let mut map = OMap::new();
         if self.peek() == Some('}') {
             self.advance();
-            return Ok(Value::Struct(OberihStruct::new("JsonObject".into(), fields)));
+            return Ok(Value::Map(GcMap::new(map)));
         }
         loop {
             self.skip_ws();
@@ -201,7 +202,7 @@ impl JsonParser {
             self.skip_ws();
             self.expect(':')?;
             let val = self.parse_value()?;
-            fields.insert(key, val);
+            map.insert(MapKey::Str(key), val);
             self.skip_ws();
             match self.peek() {
                 Some(',') => { self.advance(); }
@@ -210,7 +211,7 @@ impl JsonParser {
                 None      => return Err("Незакритий об'єкт".into()),
             }
         }
-        Ok(Value::Struct(OberihStruct::new("JsonObject".into(), fields)))
+        Ok(Value::Map(GcMap::new(map)))
     }
 }
 
@@ -248,6 +249,31 @@ fn stringify_value(val: &Value, indent: usize, pretty: bool) -> String {
                 format!("[{}]", parts.join(","))
             }
         }
+        Value::Map(m)     => {
+            let entries = m.snapshot();
+            if entries.is_empty() { return "{}".into(); }
+            // Ключ JSON завжди рядок: Number/Bool ключі перетворюються в текст.
+            let key_text = |k: &MapKey| match k {
+                MapKey::Str(s) => s.clone(),
+                other          => other.to_value().to_string(),
+            };
+            if pretty {
+                let inner_indent = indent + 2;
+                let pad     = " ".repeat(inner_indent);
+                let end_pad = " ".repeat(indent);
+                let parts: Vec<String> = entries.iter()
+                    .map(|(k, v)| format!("{}{}: {}", pad,
+                        stringify_string(&key_text(k)),
+                        stringify_value(v, inner_indent, pretty)))
+                    .collect();
+                format!("{{\n{}\n{}}}", parts.join(",\n"), end_pad)
+            } else {
+                let parts: Vec<String> = entries.iter()
+                    .map(|(k, v)| format!("{}:{}", stringify_string(&key_text(k)), stringify_value(v, indent, pretty)))
+                    .collect();
+                format!("{{{}}}", parts.join(","))
+            }
+        }
         Value::Struct(s)  => {
             let fields = s.fields.lock().unwrap();
             if fields.is_empty() { return "{}".into(); }
@@ -273,6 +299,7 @@ fn stringify_value(val: &Value, indent: usize, pretty: bool) -> String {
         Value::Ok(v)      => format!("{{\"ok\":{}}}", stringify_value(v, indent, pretty)),
         Value::Err(v)     => format!("{{\"err\":{}}}", stringify_value(v, indent, pretty)),
         Value::Fn(n)      => format!("\"<fn {}>\"", n),
+        Value::EnumVal(_, v) => stringify_string(v),
         _                 => "null".into(),
     }
 }
@@ -326,16 +353,16 @@ mod tests {
     #[test]
     fn test_parse_object() {
         let v = json_parse(r#"{"name": "Oberih", "version": 1}"#).unwrap();
-        if let Value::Struct(s) = v {
-            assert!(s.get("name").is_some());
-            assert!(s.get("version").is_some());
-        } else { panic!("Очікувався Struct"); }
+        if let Value::Map(m) = v {
+            assert!(m.get(&MapKey::Str("name".into())).is_some());
+            assert!(m.get(&MapKey::Str("version".into())).is_some());
+        } else { panic!("Очікувався Map"); }
     }
 
     #[test]
     fn test_parse_nested() {
         let v = json_parse(r#"{"user": {"id": 1, "tags": ["a", "b"]}}"#).unwrap();
-        assert!(matches!(v, Value::Struct(_)));
+        assert!(matches!(v, Value::Map(_)));
     }
 
     #[test]
@@ -355,6 +382,19 @@ mod tests {
     #[test]
     fn test_empty_collections() {
         assert!(matches!(json_parse("[]"),  Ok(Value::List(_))));
-        assert!(matches!(json_parse("{}"),  Ok(Value::Struct(_))));
+        assert!(matches!(json_parse("{}"),  Ok(Value::Map(_))));
+    }
+
+    #[test]
+    fn test_object_key_order_preserved() {
+        // Порядок ключів документа зберігається (не сортується), тож round-trip точний.
+        let original = r#"{"z":1,"a":{"y":true,"b":null},"m":[1,2]}"#;
+        assert_eq!(json_stringify(&json_parse(original).unwrap()), original);
+    }
+
+    #[test]
+    fn test_duplicate_key_last_wins() {
+        let v = json_parse(r#"{"a":1,"a":2}"#).unwrap();
+        assert_eq!(json_stringify(&v), r#"{"a":2}"#);
     }
 }

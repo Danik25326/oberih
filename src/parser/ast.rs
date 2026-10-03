@@ -50,6 +50,8 @@ pub struct FnDecl {
     pub modifiers:    Vec<Modifier>,
     pub body:         Block,
     pub span:         Span,
+    /// Рядок закриваючої `}` (потрібен форматеру для прив'язки коментарів).
+    pub end_line:     usize,
 }
 
 #[derive(Debug, Clone)]
@@ -112,6 +114,7 @@ pub struct StructDecl {
     pub type_params: Vec<String>,
     pub fields:      Vec<StructField>,
     pub span:        Span,
+    pub end_line:    usize,
 }
 
 #[derive(Debug, Clone)]
@@ -125,7 +128,10 @@ pub struct StructField {
 pub struct EnumDecl {
     pub name:     String,
     pub variants: Vec<String>,
+    /// Рядок оголошення кожного варіанту (паралельно з `variants`).
+    pub variant_lines: Vec<usize>,
     pub span:     Span,
+    pub end_line: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -136,6 +142,8 @@ pub struct EnumDecl {
 pub enum TypeExpr {
     Simple(String),
     Generic(String, Vec<TypeExpr>),  // Result<T, E>, List<T>
+    /// Тип функції: `Fn(Number, String) -> Bool` (`-> R` необов'язковий)
+    Func(Vec<TypeExpr>, Option<Box<TypeExpr>>),
 }
 
 impl TypeExpr {
@@ -143,6 +151,7 @@ impl TypeExpr {
         match self {
             TypeExpr::Simple(n)     => n,
             TypeExpr::Generic(n, _) => n,
+            TypeExpr::Func(..)      => "Fn",
         }
     }
 }
@@ -157,6 +166,8 @@ pub type Block = Vec<Stmt>;
 pub enum Stmt {
     Let {
         name:  String,
+        /// Необов'язкова анотація: `let xs: List<Number> = []`
+        ty:    Option<TypeExpr>,
         value: Expr,
         span:  Span,
     },
@@ -169,17 +180,22 @@ pub enum Stmt {
         then_body: Block,
         else_body: Option<Block>,
         span:      Span,
+        /// Рядок `}` що закриває then-блок і рядок фінальної `}` всієї інструкції.
+        then_end:  usize,
+        end_line:  usize,
     },
     While {
         cond: Expr,
         body: Block,
         span: Span,
+        end_line: usize,
     },
     For {
         var:  String,
         iter: Expr,
         body: Block,
         span: Span,
+        end_line: usize,
     },
     Expr(Expr),  // виклик або присвоєння як інструкція
     Assign {
@@ -193,8 +209,31 @@ pub enum Stmt {
 // Вирази
 // ---------------------------------------------------------------------------
 
+/// Параметр лямбди: тип необов'язковий (`fn(x) => x * 2`).
+#[derive(Debug, Clone)]
+pub struct LambdaParam {
+    pub name: String,
+    pub ty:   Option<TypeExpr>,
+}
+
+#[derive(Debug, Clone)]
+pub enum LambdaBody {
+    /// `fn(x) => x * 2`
+    Expr(Box<Expr>),
+    /// `fn(x) -> Number { return x * 2 }`
+    Block(Vec<Stmt>),
+}
+
 #[derive(Debug, Clone)]
 pub enum Expr {
+    /// Анонімна функція. Захоплює змінні охоплюючої функції ЗА ЗНАЧЕННЯМ
+    /// у момент створення (List/Map/struct — посилальні, тож їхні зміни видно).
+    Lambda {
+        params: Vec<LambdaParam>,
+        ret:    Option<TypeExpr>,
+        body:   LambdaBody,
+        span:   Span,
+    },
     // Літерали
     Number(f64, Span),
     StringLit(String, Span),
@@ -211,6 +250,7 @@ pub enum Expr {
 
     // Унарний мінус
     Neg { expr: Box<Expr>, span: Span },
+    BitNot { expr: Box<Expr>, span: Span },
 
     // Логічне заперечення
     Not { expr: Box<Expr>, span: Span },
@@ -251,6 +291,7 @@ impl Expr {
             Expr::ResultCtor { span, .. } => span,
             Expr::BinOp { span, .. } => span,
             Expr::Neg { span, .. }   => span,
+            Expr::BitNot { span, .. } => span,
             Expr::Not { span, .. }   => span,
             Expr::Try { span, .. }   => span,
             Expr::Call { span, .. }  => span,
@@ -261,6 +302,7 @@ impl Expr {
             Expr::Spawn { span, .. } => span,
             Expr::List(_, s)         => s,
             Expr::Map(_, s)          => s,
+            Expr::Lambda { span, .. } => span,
         }
     }
 }
@@ -270,6 +312,7 @@ pub enum BinOp {
     Add, Sub, Mul, Div,
     Eq, NotEq, Lt, Gt, LtEq, GtEq,
     And, Or,
+    BitAnd, BitOr, BitXor, Shl, Shr,
 }
 
 #[derive(Debug, Clone)]

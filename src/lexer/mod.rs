@@ -56,6 +56,17 @@ pub enum Token {
     Or,         // ||
     Not,        // !
 
+    // Бітові оператори. `>>` НАВМИСНО не тут — див. коментар при парсингу
+    // виразів: окремий токен для `>>` зламав би вкладені дженерики
+    // (`Map<String, List<Number>>` закінчується на `>>`, що парситься як
+    // ДВІ закриваючі `>`, не одна). Тому `>>` розпізнається на рівні
+    // ПАРСЕРА як два сусідні токени Gt, а не тут, на рівні лексера.
+    Amp,        // &  (бітове AND)
+    Pipe,       // |  (бітове OR)
+    Caret,      // ^  (бітове XOR)
+    Tilde,      // ~  (бітове NOT)
+    Shl,        // << (зсув вліво)
+
     // Арифметичні оператори
     Plus,       // +
     Minus,      // -
@@ -113,19 +124,40 @@ impl std::fmt::Display for LexError {
     }
 }
 
+/// `//` коментар зі службовою інформацією для форматера.
+#[derive(Debug, Clone)]
+pub struct Comment {
+    pub line: usize,
+    /// Повний текст, включно з `//`.
+    pub text: String,
+    /// true — перед коментарем на тому ж рядку є код (`let x = 1 // ...`).
+    pub trailing: bool,
+}
+
 pub struct Lexer<'a> {
     src: &'a str,
     pos: usize,
     line: usize,
     col: usize,
+    /// Зібрані `//` коментарі: (номер рядка, текст коментаря включно з `//`).
+    /// Токенайзер їх пропускає (вони не потрібні парсеру), але форматер
+    /// (`oberih fmt`) використовує їх, щоб не губити коментарі при переформатуванні.
+    comments: Vec<Comment>,
 }
 
 impl<'a> Lexer<'a> {
     pub fn new(src: &'a str) -> Self {
-        Lexer { src, pos: 0, line: 1, col: 1 }
+        Lexer { src, pos: 0, line: 1, col: 1, comments: Vec::new() }
     }
 
-    pub fn tokenize(mut self) -> Result<Vec<Tok>, LexError> {
+    pub fn tokenize(self) -> Result<Vec<Tok>, LexError> {
+        let (tokens, _) = self.tokenize_with_comments()?;
+        Ok(tokens)
+    }
+
+    /// Як `tokenize`, але додатково повертає всі `//` коментарі із файлу
+    /// разом з номером рядка, на якому вони починаються.
+    pub fn tokenize_with_comments(mut self) -> Result<(Vec<Tok>, Vec<Comment>), LexError> {
         let mut tokens = Vec::new();
         loop {
             self.skip_whitespace_and_comments();
@@ -136,7 +168,7 @@ impl<'a> Lexer<'a> {
             let tok = self.next_token()?;
             tokens.push(tok);
         }
-        Ok(tokens)
+        Ok((tokens, self.comments))
     }
 
     fn span(&self) -> Span {
@@ -173,9 +205,15 @@ impl<'a> Lexer<'a> {
             }
             // // коментарі
             if self.peek() == Some('/') && self.peek2() == Some('/') {
+                let start_line = self.line;
+                let start_pos  = self.pos;
                 while self.peek().map(|c| c != '\n').unwrap_or(false) {
                     self.advance();
                 }
+                let text = self.src[start_pos..self.pos].to_string();
+                let line_start = self.src[..start_pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
+                let trailing = !self.src[line_start..start_pos].trim().is_empty();
+                self.comments.push(Comment { line: start_line, text, trailing });
             } else {
                 break;
             }
@@ -188,7 +226,7 @@ impl<'a> Lexer<'a> {
 
         // Числа
         if c.is_ascii_digit() || (c == '-' && self.peek2().map(|d| d.is_ascii_digit()).unwrap_or(false)) {
-            return Ok(Tok { kind: self.lex_number(), span });
+            return Ok(Tok { kind: self.lex_number()?, span });
         }
 
         // Рядки
@@ -242,10 +280,7 @@ impl<'a> Lexer<'a> {
                     self.advance();
                     Token::And
                 } else {
-                    return Err(LexError {
-                        message: "Очікувалось '&&'".into(),
-                        line: span.line, col: span.col,
-                    });
+                    Token::Amp
                 }
             }
             '|' => {
@@ -253,12 +288,11 @@ impl<'a> Lexer<'a> {
                     self.advance();
                     Token::Or
                 } else {
-                    return Err(LexError {
-                        message: "Очікувалось '||'".into(),
-                        line: span.line, col: span.col,
-                    });
+                    Token::Pipe
                 }
             }
+            '^' => Token::Caret,
+            '~' => Token::Tilde,
             '!' => {
                 if self.peek() == Some('=') {
                     self.advance();
@@ -271,6 +305,9 @@ impl<'a> Lexer<'a> {
                 if self.peek() == Some('=') {
                     self.advance();
                     Token::LtEq
+                } else if self.peek() == Some('<') {
+                    self.advance();
+                    Token::Shl
                 } else {
                     Token::Lt
                 }
@@ -294,7 +331,12 @@ impl<'a> Lexer<'a> {
         Ok(Tok { kind, span })
     }
 
-    fn lex_number(&mut self) -> Token {
+    /// `Result`, а не голий `Token`: попри те, що виклик завжди відбувається
+    /// після перевірки "це цифра" (див. виклик у `next_token`), явна обробка
+    /// помилки парсингу надійніша за `.unwrap()` — і не залежить від того,
+    /// чи лишиться це інваріантом після майбутніх змін лексера.
+    fn lex_number(&mut self) -> Result<Token, LexError> {
+        let span = self.span();
         let start = self.pos;
         if self.peek() == Some('-') {
             self.advance();
@@ -309,7 +351,10 @@ impl<'a> Lexer<'a> {
             }
         }
         let s = &self.src[start..self.pos];
-        Token::Number(s.parse().unwrap())
+        s.parse().map(Token::Number).map_err(|_| LexError {
+            message: format!("Не вдалось розпізнати число '{}'", s),
+            line: span.line, col: span.col,
+        })
     }
 
     fn lex_string(&mut self) -> Result<Token, LexError> {
@@ -436,11 +481,20 @@ mod tests {
 
     #[test]
     fn test_resilience_modifiers() {
+        // Лексер навмисно НЕ перетворює ці слова в окремі токени — вони
+        // залишаються звичайними Ident, щоб `deadline`/`retries`/... не були
+        // зарезервованими словами і могли, наприклад, використовуватись як
+        // звичайні імена змінних/функцій. Розпізнавання відбувається
+        // контекстно в парсері (див. parser/mod.rs, parse_modifiers) — там
+        // парсер приймає і Token::Ident("deadline"), і, про всяк випадок,
+        // застарілий Token::Deadline. Цей тест раніше перевіряв саме
+        // застарілий шлях і тому завжди падав — виправлено на актуальну
+        // поведінку лексера.
         let toks = lex("deadline retryBudget fallback circuitBreaker");
-        assert_eq!(toks[0], Token::Deadline);
-        assert_eq!(toks[1], Token::RetryBudget);
-        assert_eq!(toks[2], Token::Fallback);
-        assert_eq!(toks[3], Token::CircuitBreaker);
+        assert_eq!(toks[0], Token::Ident("deadline".into()));
+        assert_eq!(toks[1], Token::Ident("retryBudget".into()));
+        assert_eq!(toks[2], Token::Ident("fallback".into()));
+        assert_eq!(toks[3], Token::Ident("circuitBreaker".into()));
     }
 
     #[test]

@@ -108,6 +108,7 @@ fn collect_callees_expr(expr: &Expr, out: &mut Vec<String>) {
         Expr::Try  { expr, .. } => collect_callees_expr(expr, out),
         Expr::Neg  { expr, .. } => collect_callees_expr(expr, out),
         Expr::Not  { expr, .. } => collect_callees_expr(expr, out),
+        Expr::BitNot { expr, .. } => collect_callees_expr(expr, out),
         Expr::Field { object, .. } => collect_callees_expr(object, out),
         Expr::Index { object, index, .. } => {
             collect_callees_expr(object, out);

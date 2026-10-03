@@ -7,6 +7,7 @@ pub enum Instr {
     PushNum(f64),
     PushStr(String),
     PushBool(bool),
+    PushEnum(String, String),  // (ім'я enum типу, ім'я варіанту)
     PushNil,
 
     // --- Змінні ---
@@ -22,6 +23,14 @@ pub enum Instr {
     Mul,
     Div,
     Neg,
+
+    // --- Бітові (операнди — Number, що представляє 32-бітне ціле зі знаком) ---
+    BitAnd,
+    BitOr,
+    BitXor,
+    BitNot,
+    Shl,
+    Shr,
 
     // --- Логічні ---
     And,
@@ -47,6 +56,8 @@ pub enum Instr {
 
     // --- Список ---
     MakeList(usize),    // pop N елементів -> push List
+    MakeMap(usize),     // pop 2N (key, value, ...) -> push Map
+    MakeClosure(String, usize), // pop N захоплених значень -> push Closure(fn, captured)
     LoadIndex,          // pop index, pop list -> push list[index]
     StoreIndex,         // pop value, pop index, pop list -> list[index] = value
 

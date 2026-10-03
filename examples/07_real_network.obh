@@ -7,8 +7,9 @@ resilient fn fetchPackageInfo(name: String) -> Result<String, Error>
     fallback("не вдалось з'єднатися з PyPI")
 {
     let url = "https://pypi.org/pypi/" + name + "/json"
-    let response = http.get(url)
-    return response.info.summary
+    let response = httpGet(url)?
+    let parsed = jsonParse(response.body)?
+    return parsed.info.summary
 }
 
 fn main() -> Number {

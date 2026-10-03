@@ -6,7 +6,8 @@ edition = "2021"
 [dependencies]
 # rustls — TLS без OpenSSL залежності, чистий Rust
 rustls = { version = "0.23", features = ["ring"] }
-rustls-pki-types = "1"
+# pem-парсинг (SSL_CERT_FILE) з’явився в 1.9
+rustls-pki-types = { version = "1.9", features = ["std"] }
 webpki-roots = "0.26"
 
 [[bin]]

@@ -116,7 +116,10 @@ impl Parser {
                 self.advance();
                 match self.peek().clone() {
                     Token::Struct => Ok(Item::Struct(self.parse_struct(true)?)),
-                    Token::Fn     => Ok(Item::Fn(self.parse_fn(true, false)?)),
+                    Token::Fn     => {
+                        self.advance(); // споживаємо `fn`, як в гілках `fn`/`resilient fn`
+                        Ok(Item::Fn(self.parse_fn(true, false)?))
+                    }
                     _ => Err(self.error("після 'private' очікується 'fn' або 'struct'")),
                 }
             }
@@ -163,8 +166,9 @@ impl Parser {
             fields.push(StructField { name: fname, ty, span: fspan });
             self.eat(&Token::Comma);
         }
+        let end_line = self.span().line;
         self.expect(&Token::RBrace)?;
-        Ok(StructDecl { is_private, name, type_params, fields, span })
+        Ok(StructDecl { is_private, name, type_params, fields, span, end_line })
     }
 
     // --- enum ---
@@ -175,12 +179,15 @@ impl Parser {
         let name = self.expect_ident()?;
         self.expect(&Token::LBrace)?;
         let mut variants = Vec::new();
+        let mut variant_lines = Vec::new();
         while !self.check(&Token::RBrace) {
+            variant_lines.push(self.span().line);
             variants.push(self.expect_ident()?);
             self.eat(&Token::Comma);
         }
+        let end_line = self.span().line;
         self.expect(&Token::RBrace)?;
-        Ok(EnumDecl { name, variants, span })
+        Ok(EnumDecl { name, variants, variant_lines, span, end_line })
     }
 
     // --- fn ---
@@ -233,11 +240,12 @@ impl Parser {
 
         self.expect(&Token::LBrace)?;
         let body = self.parse_block()?;
+        let end_line = self.span().line;
         self.expect(&Token::RBrace)?;
 
         Ok(FnDecl {
             is_private, is_resilient, name, method_of,
-            type_params, params, return_type, modifiers, body, span,
+            type_params, params, return_type, modifiers, body, span, end_line,
         })
     }
 
@@ -420,6 +428,18 @@ impl Parser {
 
     fn parse_type_expr(&mut self) -> PR<TypeExpr> {
         let name = self.expect_ident()?;
+        // Тип функції: Fn(A, B) -> R
+        if name == "Fn" && self.check(&Token::LParen) {
+            self.advance();
+            let mut params = Vec::new();
+            while !self.check(&Token::RParen) {
+                params.push(self.parse_type_expr()?);
+                if !self.eat(&Token::Comma) { break; }
+            }
+            self.expect(&Token::RParen)?;
+            let ret = if self.eat(&Token::Arrow) { Some(Box::new(self.parse_type_expr()?)) } else { None };
+            return Ok(TypeExpr::Func(params, ret));
+        }
         if self.check(&Token::Lt) {
             self.advance();
             let mut args = Vec::new();
@@ -461,9 +481,10 @@ impl Parser {
         let span = self.span();
         self.expect(&Token::Let)?;
         let name = self.expect_ident()?;
+        let ty = if self.eat(&Token::Colon) { Some(self.parse_type_expr()?) } else { None };
         self.expect(&Token::Assign)?;
         let value = self.parse_expr()?;
-        Ok(Stmt::Let { name, value, span })
+        Ok(Stmt::Let { name, ty, value, span })
     }
 
     fn parse_return(&mut self) -> PR<Stmt> {
@@ -481,16 +502,19 @@ impl Parser {
         self.expect(&Token::RParen)?;
         self.expect(&Token::LBrace)?;
         let then_body = self.parse_block()?;
+        let then_end = self.span().line;
         self.expect(&Token::RBrace)?;
+        let mut end_line = then_end;
         let else_body = if self.eat(&Token::Else) {
             self.expect(&Token::LBrace)?;
             let b = self.parse_block()?;
+            end_line = self.span().line;
             self.expect(&Token::RBrace)?;
             Some(b)
         } else {
             None
         };
-        Ok(Stmt::If { cond, then_body, else_body, span })
+        Ok(Stmt::If { cond, then_body, else_body, span, then_end, end_line })
     }
 
     fn parse_while(&mut self) -> PR<Stmt> {
@@ -501,8 +525,9 @@ impl Parser {
         self.expect(&Token::RParen)?;
         self.expect(&Token::LBrace)?;
         let body = self.parse_block()?;
+        let end_line = self.span().line;
         self.expect(&Token::RBrace)?;
-        Ok(Stmt::While { cond, body, span })
+        Ok(Stmt::While { cond, body, span, end_line })
     }
 
     fn parse_for(&mut self) -> PR<Stmt> {
@@ -515,8 +540,9 @@ impl Parser {
         self.expect(&Token::RParen)?;
         self.expect(&Token::LBrace)?;
         let body = self.parse_block()?;
+        let end_line = self.span().line;
         self.expect(&Token::RBrace)?;
-        Ok(Stmt::For { var, iter, body, span })
+        Ok(Stmt::For { var, iter, body, span, end_line })
     }
 
     fn parse_expr_or_assign(&mut self) -> PR<Stmt> {
@@ -568,9 +594,26 @@ impl Parser {
         Ok(left)
     }
 
+    /// `>` + `>`, СУСІДНІ (один одразу за одним, без місця для ще одного
+    /// символу між ними) — права частина `>>`. Навмисно НЕ окремий токен
+    /// лексера: інакше `Map<String, List<Number>>` (закривається `>>`, тобто
+    /// двома `>`, що закривають два вкладені дженерики) зламався б, бо
+    /// парсер типів чекає на дженерик ОДНУ `Gt` за раз. Тут, на рівні
+    /// виразів, де дженериків немає, безпечно об'єднати дві сусідні `Gt` в
+    /// один оператор зсуву.
+    fn check_shr(&self) -> bool {
+        if !matches!(self.peek(), Token::Gt) { return false; }
+        let (a, b) = (&self.tokens[self.pos].span, match self.tokens.get(self.pos + 1) {
+            Some(t) => &t.span,
+            None => return false,
+        });
+        matches!(self.tokens.get(self.pos + 1).map(|t| &t.kind), Some(Token::Gt))
+            && a.line == b.line && b.col == a.col + 1
+    }
+
     fn parse_comparison(&mut self) -> PR<Expr> {
         let span = self.span();
-        let mut left = self.parse_additive()?;
+        let mut left = self.parse_bit_or()?;
         loop {
             let op = match self.peek() {
                 Token::Eq    => BinOp::Eq,
@@ -582,13 +625,71 @@ impl Parser {
                 _            => break,
             };
             self.advance();
-            let right = self.parse_additive()?;
+            let right = self.parse_bit_or()?;
             left = Expr::BinOp {
                 op,
                 left:  Box::new(left),
                 right: Box::new(right),
                 span:  span.clone(),
             };
+        }
+        Ok(left)
+    }
+
+    // Бітові `| ^ &` навмисно тісніші за порівняння й слабші за зсуви — як у
+    // Python (там це той самий відомий нюанс: `1 | 2 == 3` це `(1|2) == 3`,
+    // а не `1 | (2==3)`). Рівні окремі (а не всі разом), щоб `a & b | c`
+    // мало очевидний, передбачуваний розбір зліва направо за пріоритетом,
+    // а не плутанину між трьома різними операторами на одному рівні.
+
+    fn parse_bit_or(&mut self) -> PR<Expr> {
+        let span = self.span();
+        let mut left = self.parse_bit_xor()?;
+        while matches!(self.peek(), Token::Pipe) {
+            self.advance();
+            let right = self.parse_bit_xor()?;
+            left = Expr::BinOp { op: BinOp::BitOr, left: Box::new(left), right: Box::new(right), span: span.clone() };
+        }
+        Ok(left)
+    }
+
+    fn parse_bit_xor(&mut self) -> PR<Expr> {
+        let span = self.span();
+        let mut left = self.parse_bit_and()?;
+        while matches!(self.peek(), Token::Caret) {
+            self.advance();
+            let right = self.parse_bit_and()?;
+            left = Expr::BinOp { op: BinOp::BitXor, left: Box::new(left), right: Box::new(right), span: span.clone() };
+        }
+        Ok(left)
+    }
+
+    fn parse_bit_and(&mut self) -> PR<Expr> {
+        let span = self.span();
+        let mut left = self.parse_shift()?;
+        while matches!(self.peek(), Token::Amp) {
+            self.advance();
+            let right = self.parse_shift()?;
+            left = Expr::BinOp { op: BinOp::BitAnd, left: Box::new(left), right: Box::new(right), span: span.clone() };
+        }
+        Ok(left)
+    }
+
+    fn parse_shift(&mut self) -> PR<Expr> {
+        let span = self.span();
+        let mut left = self.parse_additive()?;
+        loop {
+            if matches!(self.peek(), Token::Shl) {
+                self.advance();
+                let right = self.parse_additive()?;
+                left = Expr::BinOp { op: BinOp::Shl, left: Box::new(left), right: Box::new(right), span: span.clone() };
+            } else if self.check_shr() {
+                self.advance(); self.advance(); // дві сусідні `Gt`
+                let right = self.parse_additive()?;
+                left = Expr::BinOp { op: BinOp::Shr, left: Box::new(left), right: Box::new(right), span: span.clone() };
+            } else {
+                break;
+            }
         }
         Ok(left)
     }
@@ -616,7 +717,7 @@ impl Parser {
 
     fn parse_multiplicative(&mut self) -> PR<Expr> {
         let span = self.span();
-        let mut left = self.parse_try()?;
+        let mut left = self.parse_unary()?;
         loop {
             let op = match self.peek() {
                 Token::Star  => BinOp::Mul,
@@ -624,7 +725,7 @@ impl Parser {
                 _            => break,
             };
             self.advance();
-            let right = self.parse_try()?;
+            let right = self.parse_unary()?;
             left = Expr::BinOp {
                 op,
                 left:  Box::new(left),
@@ -633,6 +734,25 @@ impl Parser {
             };
         }
         Ok(left)
+    }
+
+    /// Унарні `!` і `-`. Операнд — повний postfix-вираз, тому `!f(x)` це `!(f(x))`,
+    /// а `-a.b[0]` це `-(a.b[0])` (раніше `!f(x)` парсилось як `(!f)(x)` і падало).
+    fn parse_unary(&mut self) -> PR<Expr> {
+        let span = self.span();
+        if self.eat(&Token::Not) {
+            let expr = self.parse_unary()?;
+            return Ok(Expr::Not { expr: Box::new(expr), span });
+        }
+        if self.eat(&Token::Minus) {
+            let expr = self.parse_unary()?;
+            return Ok(Expr::Neg { expr: Box::new(expr), span });
+        }
+        if self.eat(&Token::Tilde) {
+            let expr = self.parse_unary()?;
+            return Ok(Expr::BitNot { expr: Box::new(expr), span });
+        }
+        self.parse_try()
     }
 
     fn parse_try(&mut self) -> PR<Expr> {
@@ -776,15 +896,31 @@ impl Parser {
                     span,
                 })
             }
-            Token::Not => {
+            // Лямбда: fn(x, y: Number) => вираз  |  fn(x) -> T { ... }  |  fn(x) { ... }
+            Token::Fn => {
                 self.advance();
-                let expr = self.parse_primary()?;
-                Ok(Expr::Not { expr: Box::new(expr), span })
-            }
-            Token::Minus => {
-                self.advance();
-                let expr = self.parse_primary()?;
-                Ok(Expr::Neg { expr: Box::new(expr), span })
+                self.expect(&Token::LParen)?;
+                let mut params = Vec::new();
+                while !self.check(&Token::RParen) {
+                    let name = self.expect_ident()?;
+                    let ty = if self.eat(&Token::Colon) { Some(self.parse_type_expr()?) } else { None };
+                    params.push(LambdaParam { name, ty });
+                    if !self.eat(&Token::Comma) { break; }
+                }
+                self.expect(&Token::RParen)?;
+                let ret = if self.eat(&Token::Arrow) { Some(self.parse_type_expr()?) } else { None };
+                let body = if self.eat(&Token::FatArrow) {
+                    if ret.is_some() {
+                        return Err(self.error("лямбда з `=>` не може мати `-> Тип`; використайте `{ ... }`"));
+                    }
+                    LambdaBody::Expr(Box::new(self.parse_expr()?))
+                } else {
+                    self.expect(&Token::LBrace)?;
+                    let stmts = self.parse_block()?;
+                    self.expect(&Token::RBrace)?;
+                    LambdaBody::Block(stmts)
+                };
+                Ok(Expr::Lambda { params, ret, body, span })
             }
             Token::LParen => {
                 self.advance();

@@ -48,9 +48,16 @@ pub fn run_tests(program: &Program) -> Vec<TestResult> {
 
     for name in &test_fns {
         let start = std::time::Instant::now();
-        let mut vm = VM::new(module.clone());
+        let module_clone = module.clone();
+        let name_clone = name.clone();
+        // Великий стек — див. vm::run_with_big_stack: глибока рекурсія в
+        // тестованій функції не повинна класти процес цілого test runner'а.
+        let call_result = crate::vm::run_with_big_stack(move || {
+            let mut vm = VM::new(module_clone);
+            vm.call_fn(&name_clone, vec![])
+        });
 
-        let (passed, message) = match vm.call_fn(name, vec![]) {
+        let (passed, message) = match call_result {
             Ok(Value::Bool(true))  => (true,  None),
             Ok(Value::Nil)         => (true,  None),  // void test — pass
             Ok(Value::Num(n)) if n == 0.0 => (true, None),

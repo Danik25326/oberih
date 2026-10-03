@@ -104,6 +104,22 @@ fn send_https(host: &str, port: u16, request: &str, timeout_secs: u64) -> Result
     let mut root_store = RootCertStore::empty();
     root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 
+    // Додаткові довірені CA з PEM-файлу: SSL_CERT_FILE (стандартна змінна
+    // середовища). Потрібно за корпоративними проксі з TLS-перехопленням,
+    // чий CA відсутній у вбудованому наборі webpki-roots.
+    if let Ok(path) = std::env::var("SSL_CERT_FILE") {
+        use rustls_pki_types::{CertificateDer, pem::PemObject};
+        match CertificateDer::pem_file_iter(&path) {
+            Ok(iter) => {
+                for cert in iter.flatten() {
+                    // Невалідні сертифікати в бандлі просто пропускаємо.
+                    let _ = root_store.add(cert);
+                }
+            }
+            Err(e) => return Err(format!("SSL_CERT_FILE '{}': {}", path, e)),
+        }
+    }
+
     let config = ClientConfig::builder()
         .with_root_certificates(root_store)
         .with_no_client_auth();

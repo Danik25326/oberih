@@ -1,0 +1,71 @@
+// 22_maps.obh — Map (словник): ключ → значення.
+//
+// Ключі: String, Number або Bool. Порядок вставки зберігається.
+// Map — посилальний тип (як struct і list): функція, що отримала Map,
+// змінює той самий Map.
+
+// Підрахунок частоти слів
+fn countWords(text: String) -> Map<String, Number> {
+    let counts = {}
+    for (word in strSplit(text, " ")) {
+        counts[word] = mapGet(counts, word, 0) + 1
+    }
+    return counts
+}
+
+// Групування чисел за парністю
+fn groupByParity(nums: List<Number>) -> Map<String, List<Number>> {
+    let groups = {"even": [], "odd": []}
+    for (n in nums) {
+        if (n - floor(n / 2) * 2 == 0) {
+            groups["even"] = push(groups["even"], n)
+        } else {
+            groups["odd"] = push(groups["odd"], n)
+        }
+    }
+    return groups
+}
+
+fn main() -> Number {
+    println("=== Літерал, індексація, поле ===")
+    let user = {"name": "Оксана", "age": 30}
+    user["city"] = "Київ"
+    user.age = user.age + 1
+    println(user)
+    println("name:", user["name"], "| city:", user.city, "| нема:", user["zip"])
+
+    println("\n=== Операції ===")
+    println("len:", len(user), "| has age:", mapHas(user, "age"))
+    println("keys:", keys(user))
+    println("values:", values(user))
+    println("delete city ->", mapDelete(user, "city"), user)
+    println("merge:", mapMerge(user, {"age": 99, "role": "admin"}))
+
+    println("\n=== Перебір (for по ключах) ===")
+    for (k in user) {
+        println(" ", k, "=", user[k])
+    }
+    for (pair in entries(user)) {
+        println("  пара:", pair[0], "->", pair[1])
+    }
+
+    println("\n=== Частота слів ===")
+    println(countWords("the cat and the dog and the bird"))
+
+    println("\n=== Групування ===")
+    println(groupByParity([1, 2, 3, 4, 5, 6, 7]))
+
+    println("\n=== JSON <-> Map ===")
+    let cfg = jsonParse("{\"server\": {\"host\": \"localhost\", \"port\": 8080}, \"debug\": true}")?
+    println("host:", cfg.server.host, "| port:", cfg.server["port"], "| typeOf:", typeOf(cfg))
+    cfg.server.port = 9090
+    println(jsonStringify(cfg))
+
+    println("\n=== Посилальна семантика ===")
+    let a = {"x": 1}
+    let b = a
+    b["x"] = 2
+    println("a =", a, "(b — той самий Map)")
+
+    return 0
+}

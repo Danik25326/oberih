@@ -1,0 +1,9 @@
+// ПОМИЛКА: internalHelper оголошена як `private` у lib/private_demo_lib.obh,
+// тому з іншого файлу її викликати не можна. Очікується помилка модуля.
+
+import "lib/private_demo_lib.obh"
+
+fn main() -> Number {
+    print(internalHelper(1))
+    return 0
+}

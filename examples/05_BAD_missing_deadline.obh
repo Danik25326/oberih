@@ -4,7 +4,7 @@
 resilient fn getPrice(itemId: String) -> Result<Price, Error>
     retries(3)
 {
-    return http.get("/prices/" + itemId)
+    return httpGet("/prices/" + itemId)
 }
 
 fn main() -> Number {

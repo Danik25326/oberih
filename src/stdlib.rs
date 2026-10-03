@@ -4,7 +4,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::io::{self, BufRead, Write};
 use crate::vm::{Value, RuntimeError};
-use crate::gc::GcList;
+use crate::gc::{GcList, GcMap, MapKey, OMap};
 
 type VR<T> = Result<T, RuntimeError>;
 
@@ -14,6 +14,10 @@ fn rt_err(msg: impl Into<String>) -> RuntimeError {
 
 /// Повертає true якщо ім'я — вбудована функція.
 pub fn is_builtin(name: &str) -> bool {
+    is_core_builtin(name) || crate::stdlib_ext::is_ext(name) || crate::regex_ops::is_ext(name)
+}
+
+fn is_core_builtin(name: &str) -> bool {
     matches!(name,
         // IO
         "print" | "println" | "readLine" | "readFile" | "writeFile" | "appendFile" |
@@ -29,9 +33,14 @@ pub fn is_builtin(name: &str) -> bool {
         "strSplit" | "strJoin" | "strReplace" | "strSlice" |
         // Числа
         "floor" | "ceil" | "round" | "abs" | "sqrt" | "pow" | "min" | "max" |
+        // Map
+        "keys" | "values" | "entries" | "mapHas" | "mapGet" | "mapSet" |
+        "mapDelete" | "mapMerge" |
+        // Типи та ітерація
+        "typeOf" | "__iterable" |
         // Списки
         "len" | "push" | "pop" | "first" | "last" | "reverse" | "contains" |
-        "map" | "filter" | "range" |
+        "range" |
         // Час
         "now" | "sleep" |
         // Процес
@@ -69,7 +78,7 @@ pub fn call_builtin(name: &str, args: Vec<Value>) -> VR<Value> {
             let path = require_str(&args, 0, "readFile")?;
             match std::fs::read_to_string(&path) {
                 Ok(content) => Ok(Value::Ok(Box::new(Value::Str(content)))),
-                Err(e)      => Ok(Value::Err(Box::new(Value::Str(e.to_string())))),
+                Err(e)      => Ok(Value::Err(Box::new(Value::Str(format!("readFile '{}': {}", path, e))))),
             }
         }
         "writeFile" => {
@@ -77,7 +86,7 @@ pub fn call_builtin(name: &str, args: Vec<Value>) -> VR<Value> {
             let content = require_str(&args, 1, "writeFile")?;
             match std::fs::write(&path, &content) {
                 Ok(_)  => Ok(Value::Ok(Box::new(Value::Nil))),
-                Err(e) => Ok(Value::Err(Box::new(Value::Str(e.to_string())))),
+                Err(e) => Ok(Value::Err(Box::new(Value::Str(format!("writeFile '{}': {}", path, e))))),
             }
         }
         "appendFile" => {
@@ -90,7 +99,7 @@ pub fn call_builtin(name: &str, args: Vec<Value>) -> VR<Value> {
                         .map_err(|e| rt_err(e.to_string()))?;
                     Ok(Value::Ok(Box::new(Value::Nil)))
                 }
-                Err(e) => Ok(Value::Err(Box::new(Value::Str(e.to_string())))),
+                Err(e) => Ok(Value::Err(Box::new(Value::Str(format!("appendFile '{}': {}", path, e))))),
             }
         }
 
@@ -200,6 +209,11 @@ pub fn call_builtin(name: &str, args: Vec<Value>) -> VR<Value> {
             Ok(Value::List(GcList::new(parts)))
         }
         "strJoin" => {
+            // Приймаємо обидва порядки: strJoin(sep, list) і strJoin(list, sep).
+            let mut args = args;
+            if matches!(args.get(0), Some(Value::List(_))) && matches!(args.get(1), Some(Value::Str(_))) {
+                args.swap(0, 1);
+            }
             let sep = require_str(&args, 0, "strJoin")?;
             let list = require_list(&args, 1, "strJoin")?;
             let parts: Vec<String> = list.iter().map(|v| v.to_string()).collect();
@@ -246,11 +260,47 @@ pub fn call_builtin(name: &str, args: Vec<Value>) -> VR<Value> {
         }
 
         // --- Списки ---
+        "keys" | "values" | "entries" | "mapHas" | "mapGet" | "mapSet" |
+        "mapDelete" | "mapMerge" => {
+            let method = match name {
+                "mapHas" => "has", "mapGet" => "get", "mapSet" => "set",
+                "mapDelete" => "delete", "mapMerge" => "merge",
+                other => other,               // keys / values / entries
+            };
+            let mut it = args.into_iter();
+            match it.next() {
+                Some(Value::Map(m)) => map_op(&m, method, it.collect()),
+                Some(other) => Err(rt_err(format!(
+                    "{}: перший аргумент має бути Map, отримано {}", name, other
+                ))),
+                None => Err(rt_err(format!("{}: потрібен Map", name))),
+            }
+        }
+        "typeOf" => {
+            let v = args.into_iter().next().unwrap_or(Value::Nil);
+            Ok(Value::Str(type_of(&v)))
+        }
+        // Службова: `for (x in <expr>)` компілюється через неї.
+        // List -> сам список; Map -> знімок ключів; String -> список символів.
+        "__iterable" => {
+            match args.into_iter().next() {
+                Some(Value::List(l)) => Ok(Value::List(l)),
+                Some(Value::Map(m))  => Ok(Value::List(GcList::new(m.keys()))),
+                Some(Value::Str(s))  => Ok(Value::List(GcList::new(
+                    s.chars().map(|c| Value::Str(c.to_string())).collect()
+                ))),
+                Some(other) => Err(rt_err(format!(
+                    "for: можна перебирати List, Map (ключі) або String, отримано {}", other
+                ))),
+                None => Err(rt_err("for: немає що перебирати")),
+            }
+        }
         "len" => {
             match args.into_iter().next() {
                 Some(Value::List(l)) => Ok(Value::Num(l.len() as f64)),
                 Some(Value::Str(s))  => Ok(Value::Num(s.chars().count() as f64)),
-                _ => Err(rt_err("len: потрібен List або String")),
+                Some(Value::Map(m))  => Ok(Value::Num(m.len() as f64)),
+                _ => Err(rt_err("len: потрібен List, Map або String")),
             }
         }
         "push" => {
@@ -331,7 +381,11 @@ pub fn call_builtin(name: &str, args: Vec<Value>) -> VR<Value> {
 
         // --- Відладка ---
         "debug" => {
-            let parts: Vec<String> = args.iter().map(|v| format!("{:?}", v)).collect();
+            // Значення друкуємо як у println (раніше витікав Rust-формат `Num(5.0)`),
+            // разом із типом — щоб відрізняти 5 від "5".
+            let parts: Vec<String> = args.iter()
+                .map(|v| format!("{} ({})", v, type_of(v)))
+                .collect();
             eprintln!("[debug] {}", parts.join(" "));
             Ok(Value::Nil)
         }
@@ -390,7 +444,10 @@ pub fn call_builtin(name: &str, args: Vec<Value>) -> VR<Value> {
             Ok(Value::Nil)
         }
 
-        _ => Err(rt_err(format!("Невідома вбудована функція: '{}'", name))),
+        _ => {
+            if crate::regex_ops::is_ext(name) { crate::regex_ops::call_ext(name, args) }
+            else { crate::stdlib_ext::call_ext(name, args) }
+        }
     }
 }
 
@@ -419,5 +476,81 @@ fn require_list(args: &[Value], idx: usize, fn_name: &str) -> VR<Vec<Value>> {
         Some(Value::List(l)) => Ok(l.to_vec()),
         Some(other) => Err(rt_err(format!("{}: аргумент {} має бути List, отримано {}", fn_name, idx, other))),
         None        => Err(rt_err(format!("{}: потрібен аргумент {}", fn_name, idx))),
+    }
+}
+
+/// Назва типу значення для `typeOf`.
+pub fn type_of(v: &Value) -> String {
+    match v {
+        Value::Num(_)  => "Number".into(),
+        Value::Str(_)  => "String".into(),
+        Value::Bool(_) => "Bool".into(),
+        Value::Nil     => "Nil".into(),
+        Value::Ok(_) | Value::Err(_) => "Result".into(),
+        Value::Struct(s) => s.type_name.clone(),
+        Value::List(_) => "List".into(),
+        Value::Map(_)  => "Map".into(),
+        Value::WeakRef(_) => "WeakRef".into(),
+        Value::Spawn(_)   => "SpawnHandle".into(),
+        Value::Fn(_) | Value::Closure(..) => "Fn".into(),
+        Value::Regex(..) => "Regex".into(),
+        Value::EnumVal(ty, _) => ty.clone(),
+    }
+}
+
+/// Операції над Map. Спільна для методів (`m.keys()`) і функцій (`keys(m)`).
+pub fn map_op(m: &GcMap, method: &str, args: Vec<Value>) -> VR<Value> {
+    let key_of = |v: &Value| MapKey::from_value(v).map_err(|e| rt_err(e));
+    let need = |n: usize| -> VR<()> {
+        if args.len() < n {
+            Err(rt_err(format!("Map.{}: потрібно аргументів: {}", method, n)))
+        } else { Ok(()) }
+    };
+    match method {
+        "len"     => Ok(Value::Num(m.len() as f64)),
+        "keys"    => Ok(Value::List(GcList::new(m.keys()))),
+        "values"  => Ok(Value::List(GcList::new(m.values()))),
+        "entries" => Ok(Value::List(GcList::new(
+            m.snapshot().into_iter()
+                .map(|(k, v)| Value::List(GcList::new(vec![k.to_value(), v])))
+                .collect()
+        ))),
+        "has" => {
+            need(1)?;
+            Ok(Value::Bool(m.contains(&key_of(&args[0])?)))
+        }
+        // get(k) -> значення або nil;  get(k, default) -> default якщо ключа немає
+        "get" => {
+            need(1)?;
+            match m.get(&key_of(&args[0])?) {
+                Some(v) => Ok(v),
+                None    => Ok(args.get(1).cloned().unwrap_or(Value::Nil)),
+            }
+        }
+        // set(k, v) змінює Map на місці і повертає його (можна ланцюжком)
+        "set" => {
+            need(2)?;
+            m.insert(key_of(&args[0])?, args[1].clone());
+            Ok(Value::Map(m.clone()))
+        }
+        // delete(k) -> видалене значення або nil
+        "delete" => {
+            need(1)?;
+            Ok(m.remove(&key_of(&args[0])?).unwrap_or(Value::Nil))
+        }
+        // merge(other) -> НОВИЙ Map: вміст цього + other (other перекриває)
+        "merge" => {
+            need(1)?;
+            match &args[0] {
+                Value::Map(other) => {
+                    let mut out = OMap::new();
+                    for (k, v) in m.snapshot()     { out.insert(k, v); }
+                    for (k, v) in other.snapshot() { out.insert(k, v); }
+                    Ok(Value::Map(GcMap::new(out)))
+                }
+                o => Err(rt_err(format!("Map.merge: потрібен Map, отримано {}", o))),
+            }
+        }
+        _ => Err(rt_err(format!("Невідомий метод Map: {}", method))),
     }
 }

@@ -1,6 +1,7 @@
 pub mod bytecode;
 pub mod struct_table;
 
+use std::collections::HashMap;
 use crate::parser::ast::*;
 use bytecode::*;
 use struct_table::StructTable;
@@ -75,6 +76,8 @@ impl FnCtx {
 pub struct Compiler {
     compiled:     Vec<CompiledFn>,
     struct_table: StructTable,
+    enum_table:   HashMap<String, Vec<String>>,
+    lambda_count: usize,
 }
 
 impl Compiler {
@@ -82,15 +85,29 @@ impl Compiler {
         Compiler {
             compiled:     Vec::new(),
             struct_table: StructTable::new(),
+            enum_table:   HashMap::new(),
+            lambda_count: 0,
         }
     }
 
+    /// Починає нумерацію лямбд з `base` (REPL: щоб імена не збігались між рядками).
+    pub fn with_lambda_base(mut self, base: usize) -> Self {
+        self.lambda_count = base;
+        self
+    }
+
     pub fn compile_program(mut self, program: &Program) -> CR<Module> {
-        // Прохід 1: реєструємо всі struct типи
+        // Прохід 1: реєструємо всі struct і enum типи
         for item in &program.items {
-            if let Item::Struct(s) = item {
-                let fields: Vec<String> = s.fields.iter().map(|f| f.name.clone()).collect();
-                self.struct_table.register(&s.name, fields);
+            match item {
+                Item::Struct(s) => {
+                    let fields: Vec<String> = s.fields.iter().map(|f| f.name.clone()).collect();
+                    self.struct_table.register(&s.name, fields);
+                }
+                Item::Enum(e) => {
+                    self.enum_table.insert(e.name.clone(), e.variants.clone());
+                }
+                _ => {}
             }
         }
         // Прохід 2: компілюємо функції
@@ -106,6 +123,62 @@ impl Compiler {
             functions:    self.compiled,
             struct_table: self.struct_table,
         })
+    }
+
+    /// Лямбда стає синтетичною функцією `__lambda_N(захоплені..., параметри...)`.
+    /// Змінні охоплюючої функції, які лямбда використовує, копіюються в момент
+    /// створення (`MakeClosure`). Без захоплень значення — звичайне посилання на функцію.
+    fn compile_lambda(&mut self, params: &[LambdaParam], body: &LambdaBody, outer: &mut FnCtx) -> CR<()> {
+        // 1. Які імена лямбда використовує і які з них — локальні змінні ОХОПЛЮЮЧОЇ функції?
+        let mut used = Vec::new();
+        match body {
+            LambdaBody::Expr(e)   => crate::module_loader::collect_expr_refs(e, &mut used),
+            LambdaBody::Block(bs) => for s in bs { crate::module_loader::collect_stmt_refs(s, &mut used); },
+        }
+        let mut captured: Vec<String> = Vec::new();
+        for (name, _, _) in used {
+            let is_param = params.iter().any(|p| p.name == name);
+            if !is_param && outer.local_slot(&name).is_some() && !captured.contains(&name) {
+                captured.push(name);
+            }
+        }
+
+        // 2. Компілюємо тіло в окрему функцію: [захоплені..., параметри...]
+        self.lambda_count += 1;
+        let fn_name = format!("__lambda_{}", self.lambda_count);
+        let mut ctx = FnCtx::new();
+        for name in &captured { ctx.alloc_local(name); }
+        for p in params { ctx.alloc_local(&p.name); }
+        match body {
+            LambdaBody::Expr(e) => {
+                self.compile_expr(e, &mut ctx)?;
+                ctx.emit(Instr::Return);
+            }
+            LambdaBody::Block(stmts) => {
+                for s in stmts { self.compile_stmt(s, &mut ctx)?; }
+                ctx.emit(Instr::PushNil);
+                ctx.emit(Instr::Return);
+            }
+        }
+        let local_count = ctx.local_count();
+        self.compiled.push(CompiledFn {
+            name: fn_name.clone(),
+            code: ctx.code,
+            local_count,
+            resilience: ctx.resilience,
+        });
+
+        // 3. У охоплюючій функції: значення захоплених змінних -> замикання
+        if captured.is_empty() {
+            outer.emit(Instr::LoadGlobal(fn_name));
+        } else {
+            for name in &captured {
+                let slot = outer.local_slot(name).expect("захоплена змінна має бути локальною");
+                outer.emit(Instr::LoadLocal(slot));
+            }
+            outer.emit(Instr::MakeClosure(fn_name, captured.len()));
+        }
+        Ok(())
     }
 
     fn compile_fn(&mut self, f: &FnDecl) -> CR<()> {
@@ -236,7 +309,10 @@ impl Compiler {
                 //   let __iter = iter
                 //   let __i = 0
                 //   while (__i < len(__iter)) { let x = __iter[__i]; body; __i = __i + 1 }
+                // __iterable(iter): List -> як є, Map -> знімок ключів, String -> символи.
+                ctx.emit(Instr::LoadGlobal("__iterable".into()));
                 self.compile_expr(iter, ctx)?;
+                ctx.emit(Instr::Call(1));
                 let iter_slot = ctx.alloc_local("__iter");
                 ctx.emit(Instr::StoreLocal(iter_slot));
 
@@ -248,8 +324,9 @@ impl Compiler {
 
                 // умова: __i < len(__iter)
                 ctx.emit(Instr::LoadLocal(i_slot));
-                ctx.emit(Instr::LoadLocal(iter_slot));
+                // Конвенція виклику: спочатку callee, потім аргументи.
                 ctx.emit(Instr::LoadGlobal("len".into()));
+                ctx.emit(Instr::LoadLocal(iter_slot));
                 ctx.emit(Instr::Call(1));
                 ctx.emit(Instr::Lt);
                 let jf = ctx.emit_jump_placeholder(Instr::JumpIfFalse(0));
@@ -349,6 +426,11 @@ impl Compiler {
                     BinOp::GtEq  => Instr::GtEq,
                     BinOp::And   => Instr::And,
                     BinOp::Or    => Instr::Or,
+                    BinOp::BitAnd => Instr::BitAnd,
+                    BinOp::BitOr  => Instr::BitOr,
+                    BinOp::BitXor => Instr::BitXor,
+                    BinOp::Shl    => Instr::Shl,
+                    BinOp::Shr    => Instr::Shr,
                 };
                 ctx.emit(instr);
             }
@@ -356,6 +438,11 @@ impl Compiler {
             Expr::Neg { expr, .. } => {
                 self.compile_expr(expr, ctx)?;
                 ctx.emit(Instr::Neg);
+            }
+
+            Expr::BitNot { expr, .. } => {
+                self.compile_expr(expr, ctx)?;
+                ctx.emit(Instr::BitNot);
             }
 
             Expr::Not { expr, .. } => {
@@ -368,7 +455,27 @@ impl Compiler {
                 ctx.emit(Instr::TryUnwrap);
             }
 
+            Expr::Lambda { params, body, .. } => {
+                self.compile_lambda(params, body, ctx)?;
+            }
+
             Expr::Field { object, field, .. } => {
+                // Enum.Variant — ім'я зліва це enum тип, а не змінна.
+                // Локальна змінна з тим самим ім'ям має пріоритет (тінюємо enum).
+                if let Expr::Ident(name, _) = object.as_ref() {
+                    if ctx.local_slot(name).is_none() {
+                        if let Some(variants) = self.enum_table.get(name.as_str()) {
+                            if !variants.iter().any(|v| v == field) {
+                                return Err(err(format!(
+                                    "Enum '{}' не має варіанту '{}'",
+                                    name, field
+                                )));
+                            }
+                            ctx.emit(Instr::PushEnum(name.clone(), field.clone()));
+                            return Ok(());
+                        }
+                    }
+                }
                 self.compile_expr(object, ctx)?;
                 ctx.emit(Instr::LoadField(field.clone()));
             }
@@ -438,13 +545,11 @@ impl Compiler {
             }
 
             Expr::Map(entries, _) => {
-                // Map -> List of [key, value] pairs для простоти VM
-                let n = entries.len() * 2;
                 for (k, v) in entries {
                     self.compile_expr(k, ctx)?;
                     self.compile_expr(v, ctx)?;
                 }
-                ctx.emit(Instr::MakeList(n)); // VM розпізнає як map якщо кількість парна
+                ctx.emit(Instr::MakeMap(entries.len()));
             }
         }
         Ok(())

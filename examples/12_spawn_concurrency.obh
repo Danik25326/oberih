@@ -3,7 +3,7 @@ resilient fn fetchSlowly(id: String) -> String
     retryBudget(1)
     timeout(2s)
 {
-    return http.get("/slow-endpoint/" + id)
+    return httpGet("/slow-endpoint/" + id)
 }
 
 fn main() -> Number {

@@ -31,7 +31,9 @@ pub enum Ty {
     Nil,
     Result(Box<Ty>, Box<Ty>),
     List(Box<Ty>),
+    Map(Box<Ty>, Box<Ty>),
     Struct(String),
+    Enum(String),
     Fn(Vec<Ty>, Box<Ty>),
     Generic(String),   // T, U — незв'язаний параметр
     Unknown,           // для виразів що не вдалось вивести
@@ -46,7 +48,9 @@ impl std::fmt::Display for Ty {
             Ty::Nil          => write!(f, "Nil"),
             Ty::Result(ok, err) => write!(f, "Result<{}, {}>", ok, err),
             Ty::List(t)      => write!(f, "List<{}>", t),
+            Ty::Map(k, v)    => write!(f, "Map<{}, {}>", k, v),
             Ty::Struct(n)    => write!(f, "{}", n),
+            Ty::Enum(n)      => write!(f, "{}", n),
             Ty::Fn(ps, r)    => {
                 let ps: Vec<String> = ps.iter().map(|p| p.to_string()).collect();
                 write!(f, "fn({}) -> {}", ps.join(", "), r)
@@ -64,11 +68,17 @@ fn ty_from_ast(te: &TypeExpr) -> Ty {
             "String" => Ty::Str,
             "Bool"   => Ty::Bool,
             "Nil"    => Ty::Nil,
+            // Голий `Fn` — «будь-яка функція» (порожній список параметрів + невідоме повернення)
+            "Fn"     => Ty::Fn(vec![], Box::new(Ty::Unknown)),
             n if n.len() == 1 && n.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) => {
                 Ty::Generic(n.to_string())
             }
             n        => Ty::Struct(n.to_string()),
         },
+        TypeExpr::Func(params, ret) => Ty::Fn(
+            params.iter().map(ty_from_ast).collect(),
+            Box::new(ret.as_ref().map(|r| ty_from_ast(r)).unwrap_or(Ty::Unknown)),
+        ),
         TypeExpr::Generic(name, args) => match name.as_str() {
             "Result" => {
                 let ok  = args.get(0).map(ty_from_ast).unwrap_or(Ty::Unknown);
@@ -79,9 +89,36 @@ fn ty_from_ast(te: &TypeExpr) -> Ty {
                 let inner = args.get(0).map(ty_from_ast).unwrap_or(Ty::Unknown);
                 Ty::List(Box::new(inner))
             }
+            "Map" => {
+                let k = args.get(0).map(ty_from_ast).unwrap_or(Ty::Unknown);
+                let v = args.get(1).map(ty_from_ast).unwrap_or(Ty::Unknown);
+                Ty::Map(Box::new(k), Box::new(v))
+            }
             n => Ty::Struct(n.to_string()),
         },
     }
+}
+
+/// Тип результату для вбудованих функцій, де він залежить від аргументів (Map).
+fn builtin_ret_ty(name: &str, args: &[Ty]) -> Option<Ty> {
+    match name {
+        "typeOf" => return Some(Ty::Str),
+        _ => {}
+    }
+    let (k, v) = match args.first() {
+        Some(Ty::Map(k, v)) => (k.clone(), v.clone()),
+        _ => return None,
+    };
+    Some(match name {
+        "keys"      => Ty::List(k),
+        "values"    => Ty::List(v),
+        "entries"   => Ty::List(Box::new(Ty::List(Box::new(Ty::Unknown)))),
+        "mapHas"    => Ty::Bool,
+        "mapGet" | "mapDelete" => *v,
+        "mapSet" | "mapMerge"  => args[0].clone(),
+        "len"       => Ty::Number,
+        _ => return None,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -233,8 +270,20 @@ impl Typechecker {
 
     fn check_stmt(&mut self, stmt: &Stmt, env: &mut TyEnv, ret_ty: &Ty) {
         match stmt {
-            Stmt::Let { name, value, span: _ } => {
-                let ty = self.infer_expr(value, env);
+            Stmt::Let { name, ty: declared, value, span } => {
+                let mut ty = self.infer_expr(value, env);
+                // Анотація: перевіряємо значення і надалі використовуємо ДЕКЛАРОВАНИЙ тип
+                // (важливо для порожніх `[]` і `{}`, чий тип інакше невідомий).
+                if let Some(decl) = declared {
+                    let decl_ty = ty_from_ast(decl);
+                    if !self.types_compatible(&ty, &decl_ty) {
+                        self.errors.push(TypeError {
+                            message: format!("let {}: очікується {}, отримано {}", name, decl_ty, ty),
+                            line: span.line, col: span.col,
+                        });
+                    }
+                    ty = decl_ty;
+                }
                 // Якщо це generic struct — зберігаємо прив'язку T -> конкретний тип
                 if let Expr::Call { callee, args, .. } = value {
                     if let Expr::Ident(struct_name, _) = callee.as_ref() {
@@ -265,7 +314,7 @@ impl Typechecker {
                 }
             }
 
-            Stmt::If { cond, then_body, else_body, span } => {
+            Stmt::If { cond, then_body, else_body, span, .. } => {
                 let cond_ty = self.infer_expr(cond, env);
                 if !matches!(cond_ty, Ty::Bool | Ty::Unknown) {
                     self.errors.push(TypeError {
@@ -280,7 +329,7 @@ impl Typechecker {
                 }
             }
 
-            Stmt::While { cond, body, span } => {
+            Stmt::While { cond, body, span, .. } => {
                 let cond_ty = self.infer_expr(cond, env);
                 if !matches!(cond_ty, Ty::Bool | Ty::Unknown) {
                     self.errors.push(TypeError {
@@ -292,14 +341,16 @@ impl Typechecker {
                 self.check_block(body, env, ret_ty, span);
             }
 
-            Stmt::For { var, iter, body, span } => {
+            Stmt::For { var, iter, body, span, .. } => {
                 let iter_ty = self.infer_expr(iter, env);
                 let elem_ty = match &iter_ty {
                     Ty::List(inner) => *inner.clone(),
+                    Ty::Map(k, _)   => *k.clone(),   // for (k in map) перебирає ключі
+                    Ty::Str         => Ty::Str,      // for (c in "abc") перебирає символи
                     Ty::Unknown     => Ty::Unknown,
                     other           => {
                         self.errors.push(TypeError {
-                            message: format!("for: ітерувати можна тільки List, отримано {}", other),
+                            message: format!("for: ітерувати можна List, Map (ключі) або String, отримано {}", other),
                             line: span.line,
                             col:  span.col,
                         });
@@ -400,6 +451,15 @@ impl Typechecker {
                         }
                         Ty::Bool
                     }
+                    BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
+                        if !matches!((&l, &r), (Ty::Number, Ty::Number) | (Ty::Unknown, _) | (_, Ty::Unknown)) {
+                            self.errors.push(TypeError {
+                                message: format!("бітові оператори тільки для Number, отримано {} і {}", l, r),
+                                line: span.line, col: span.col,
+                            });
+                        }
+                        Ty::Number
+                    }
                 }
             }
 
@@ -408,6 +468,17 @@ impl Typechecker {
                 if !matches!(t, Ty::Number | Ty::Unknown) {
                     self.errors.push(TypeError {
                         message: format!("унарний мінус тільки для Number, отримано {}", t),
+                        line: span.line, col: span.col,
+                    });
+                }
+                Ty::Number
+            }
+
+            Expr::BitNot { expr, span } => {
+                let t = self.infer_expr(expr, env);
+                if !matches!(t, Ty::Number | Ty::Unknown) {
+                    self.errors.push(TypeError {
+                        message: format!("`~` тільки для Number, отримано {}", t),
                         line: span.line, col: span.col,
                     });
                 }
@@ -435,6 +506,26 @@ impl Typechecker {
             }
 
             Expr::Field { object, field, span } => {
+                // Enum.Variant — спеціальний випадок: object це ім'я enum типу,
+                // а не змінна. Перевіряємо це ДО infer_expr(object), щоб не
+                // плутати з локальною змінною з тим самим ім'ям.
+                if let Expr::Ident(name, _) = object.as_ref() {
+                    if env.lookup(name).is_none() {
+                        if let Some(variants) = self.enum_variants.get(name.as_str()).cloned() {
+                            if !variants.iter().any(|v| v == field) {
+                                self.errors.push(TypeError {
+                                    message: format!(
+                                        "Enum '{}' не має варіанту '{}'",
+                                        name, field
+                                    ),
+                                    line: span.line, col: span.col,
+                                });
+                            }
+                            return Ty::Enum(name.clone());
+                        }
+                    }
+                }
+
                 let obj_ty = self.infer_expr(object, env);
                 let var_name = if let Expr::Ident(n, _) = object.as_ref() {
                     Some(n.clone())
@@ -463,6 +554,21 @@ impl Typechecker {
                             }
                             field_ty
                         } else {
+                            Ty::Unknown
+                        }
+                    }
+                    // `m.key` == m["key"]: доступний, коли ключі — String
+                    Ty::Map(k, v) => {
+                        if matches!(**k, Ty::Str | Ty::Unknown) {
+                            *v.clone()
+                        } else {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "доступ `.{}` до {} можливий лише для Map з ключами String",
+                                    field, obj_ty
+                                ),
+                                line: span.line, col: span.col,
+                            });
                             Ty::Unknown
                         }
                     }
@@ -520,7 +626,10 @@ impl Typechecker {
                         return ret_ty;
                     }
                 }
-                for a in args { self.infer_expr(a, env); }
+                let arg_tys: Vec<Ty> = args.iter().map(|a| self.infer_expr(a, env)).collect();
+                if let Expr::Ident(name, _) = callee.as_ref() {
+                    if let Some(t) = builtin_ret_ty(name, &arg_tys) { return t; }
+                }
                 Ty::Unknown
             }
 
@@ -552,6 +661,16 @@ impl Typechecker {
                         "pop"   => Ty::Unknown,
                         "first" => Ty::Unknown,
                         "last"  => Ty::Unknown,
+                        _ => Ty::Unknown,
+                    },
+                    Ty::Map(k, v) => match method.as_str() {
+                        "len"     => Ty::Number,
+                        "keys"    => Ty::List(k.clone()),
+                        "values"  => Ty::List(v.clone()),
+                        "entries" => Ty::List(Box::new(Ty::List(Box::new(Ty::Unknown)))),
+                        "has"     => Ty::Bool,
+                        "get" | "delete" => *v.clone(),
+                        "set" | "merge"  => obj_ty.clone(),
                         _ => Ty::Unknown,
                     },
                     _ => Ty::Unknown,
@@ -597,15 +716,33 @@ impl Typechecker {
             Expr::Index { object, index, span } => {
                 let obj_ty = self.infer_expr(object, env);
                 let idx_ty = self.infer_expr(index, env);
-                if !matches!(idx_ty, Ty::Number | Ty::Unknown) {
-                    self.errors.push(TypeError {
-                        message: format!("індекс має бути Number, отримано {}", idx_ty),
-                        line: span.line, col: span.col,
-                    });
-                }
                 match obj_ty {
-                    Ty::List(inner) => *inner,
-                    _               => Ty::Unknown,
+                    Ty::Map(k, v) => {
+                        if !self.types_compatible(&idx_ty, &k) {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "ключ Map<{}, {}> має бути {}, отримано {}",
+                                    k, v, k, idx_ty
+                                ),
+                                line: span.line, col: span.col,
+                            });
+                        }
+                        *v
+                    }
+                    // Тип невідомий (напр. результат jsonParse): індекс може бути й ключем.
+                    Ty::Unknown | Ty::Generic(_) => Ty::Unknown,
+                    other => {
+                        if !matches!(idx_ty, Ty::Number | Ty::Unknown) {
+                            self.errors.push(TypeError {
+                                message: format!("індекс має бути Number, отримано {}", idx_ty),
+                                line: span.line, col: span.col,
+                            });
+                        }
+                        match other {
+                            Ty::List(inner) => *inner,
+                            _               => Ty::Unknown,
+                        }
+                    }
                 }
             }
 
@@ -615,12 +752,59 @@ impl Typechecker {
                 Ty::List(Box::new(inner))
             }
 
-            Expr::Map(entries, _) => {
-                for (k, v) in entries {
-                    self.infer_expr(k, env);
-                    self.infer_expr(v, env);
+            Expr::Lambda { params, ret, body, span } => {
+                // Тіло бачить змінні охоплюючої області (вони захоплюються за значенням).
+                let mut inner = env.clone();
+                inner.push();
+                let param_tys: Vec<Ty> = params.iter()
+                    .map(|p| p.ty.as_ref().map(ty_from_ast).unwrap_or(Ty::Unknown))
+                    .collect();
+                for (p, ty) in params.iter().zip(param_tys.iter()) {
+                    inner.define(&p.name, ty.clone());
                 }
-                Ty::Unknown
+                let ret_ty = match body {
+                    LambdaBody::Expr(e) => {
+                        let t = self.infer_expr(e, &inner);
+                        if let Some(r) = ret {
+                            let declared = ty_from_ast(r);
+                            if !self.types_compatible(&t, &declared) {
+                                self.errors.push(TypeError {
+                                    message: format!("лямбда: очікується {}, отримано {}", declared, t),
+                                    line: span.line, col: span.col,
+                                });
+                            }
+                            declared
+                        } else { t }
+                    }
+                    LambdaBody::Block(stmts) => {
+                        let declared = ret.as_ref().map(ty_from_ast).unwrap_or(Ty::Unknown);
+                        self.check_block(stmts, &mut inner, &declared, span);
+                        declared
+                    }
+                };
+                Ty::Fn(param_tys, Box::new(ret_ty))
+            }
+
+            Expr::Map(entries, span) => {
+                let mut key_ty: Option<Ty> = None;
+                let mut val_ty: Option<Ty> = None;
+                let (mut key_mixed, mut val_mixed) = (false, false);
+                for (k, v) in entries {
+                    let kt = self.infer_expr(k, env);
+                    let vt = self.infer_expr(v, env);
+                    if matches!(kt, Ty::List(_) | Ty::Map(..) | Ty::Struct(_) | Ty::Enum(_)
+                                  | Ty::Nil | Ty::Fn(..) | Ty::Result(..)) {
+                        self.errors.push(TypeError {
+                            message: format!("ключ Map має бути String, Number або Bool, отримано {}", kt),
+                            line: span.line, col: span.col,
+                        });
+                    }
+                    match &key_ty { None => key_ty = Some(kt), Some(p) if *p != kt => key_mixed = true, _ => {} }
+                    match &val_ty { None => val_ty = Some(vt), Some(p) if *p != vt => val_mixed = true, _ => {} }
+                }
+                let k = if key_mixed { Ty::Unknown } else { key_ty.unwrap_or(Ty::Unknown) };
+                let v = if val_mixed { Ty::Unknown } else { val_ty.unwrap_or(Ty::Unknown) };
+                Ty::Map(Box::new(k), Box::new(v))
             }
         }
     }
@@ -638,7 +822,23 @@ impl Typechecker {
             (Ty::Bool,   Ty::Bool)   => true,
             (Ty::Nil,    Ty::Nil)    => true,
             (Ty::Struct(a), Ty::Struct(b)) => a == b,
+            (Ty::Enum(a),   Ty::Enum(b))   => a == b,
             (Ty::List(a),   Ty::List(b))   => self.types_compatible(a, b),
+            (Ty::Map(k1, v1), Ty::Map(k2, v2)) => {
+                self.types_compatible(k1, k2) && self.types_compatible(v1, v2)
+            }
+            // Функції: голий `Fn` приймає будь-яку; сигнатура `Fn(A) -> R` вимагає
+            // однакової кількості параметрів і сумісних типів.
+            (Ty::Fn(pg, rg), Ty::Fn(pe, re)) => {
+                // «Голий» Fn з будь-якого боку (сигнатура невідома) сумісний з чим завгодно —
+                // це стосується як параметрів функцій (`f: Fn`), так і функцій, що ПОВЕРТАЮТЬ
+                // голий `Fn` (типовий випадок `fn makeAdder(...) -> Fn`).
+                if pe.is_empty() && matches!(**re, Ty::Unknown) { return true; }
+                if pg.is_empty() && matches!(**rg, Ty::Unknown) { return true; }
+                pg.len() == pe.len()
+                    && pg.iter().zip(pe.iter()).all(|(g, e)| self.types_compatible(e, g))
+                    && self.types_compatible(rg, re)
+            }
             (Ty::Result(ok1, err1), Ty::Result(ok2, err2)) => {
                 self.types_compatible(ok1, ok2) && self.types_compatible(err1, err2)
             }
@@ -709,6 +909,46 @@ fn bad(x: Number) -> Number {
 "#;
         let errs = check(src).unwrap_err();
         assert!(errs.iter().any(|e| e.message.contains("Result")));
+    }
+
+    #[test]
+    fn test_bare_fn_return_is_compatible_both_ways() {
+        // Регресія: fn, що повертає голий `Fn`, не можна було передати туди,
+        // де очікується конкретна сигнатура `Fn(Number) -> Number`.
+        assert!(check(r#"
+fn makeAdder(n: Number) -> Fn { return fn(x) => x + n }
+fn applyTwice(f: Fn(Number) -> Number, x: Number) -> Number { return f(f(x)) }
+fn main() -> Number { return applyTwice(makeAdder(1), 0) }
+"#).is_ok());
+    }
+
+    #[test]
+    fn test_lambda_and_fn_types() {
+        assert!(check("fn ap(f: Fn(Number) -> Number, x: Number) -> Number { return f(x) }\nfn main() -> Number { return ap(fn(x) => x + 1, 2) }").is_ok());
+        assert!(check("fn ap(f: Fn, x: Number) -> Number { return f(x) }\nfn main() -> Number { return ap(fn(a, b) => a, 2) }").is_ok()); // голий Fn — будь-яка
+        // неправильна кількість параметрів
+        let e = check("fn ap(f: Fn(Number) -> Number) -> Number { return f(1) }\nfn main() -> Number { return ap(fn(a, b) => a) }").unwrap_err();
+        assert!(e[0].message.contains("очікується"), "{:?}", e);
+        // передали не функцію
+        assert!(check("fn ap(f: Fn(Number) -> Number) -> Number { return f(1) }\nfn main() -> Number { return ap(5) }").is_err());
+        // повернення лямбди не того типу
+        assert!(check("fn main() -> Number { let f = fn(x: Number) -> Number { return x }\n return 0 }").is_ok());
+    }
+
+    #[test]
+    fn test_let_annotation_checked() {
+        assert!(check("fn main() -> Number { let xs: List<Number> = []\n let m: Map<String, Number> = {}\n return 0 }").is_ok());
+        assert!(check("fn main() -> Number { let s: String = 5\n return 0 }").is_err());
+        // порожній Map з анотацією тепер захищає значення
+        assert!(check("fn main() -> Number { let m: Map<String, Number> = {}\n m[\"a\"] = \"x\"\n return 0 }").is_err());
+    }
+
+    #[test]
+    fn test_bitwise_type_errors() {
+        assert!(check("fn main() -> Number { return 1 & 2 }").is_ok());
+        assert!(check("fn main() -> Number { return ~1 }").is_ok());
+        assert!(check(r#"fn main() -> Number { return "a" & 1 }"#).is_err());
+        assert!(check(r#"fn main() -> Number { return ~"a" }"#).is_err());
     }
 }
 

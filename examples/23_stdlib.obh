@@ -1,0 +1,68 @@
+// 23_stdlib.obh — обробка журналу запитів за допомогою стандартної бібліотеки:
+// файли, рядки, Map, функції вищого порядку, сортування, дати (UTC).
+//
+// Функції вищого порядку (map, filter, reduce, each, any, all, find, sortBy)
+// приймають ІМ'Я функції: map(xs, double).
+
+fn parseLine(line: String) -> Map<String, String> {
+    // "2026-09-28 GET /users 200 35"
+    let p = strSplit(line, " ")
+    return {"date": p[0], "method": p[1], "path": p[2], "status": p[3], "ms": p[4]}
+}
+
+fn isError(entry: Map<String, String>) -> Bool {
+    return toNumber(entry.status) >= 500
+}
+
+fn latency(entry: Map<String, String>) -> Number {
+    return toNumber(entry.ms)
+}
+
+fn slowestFirst(entry: Map<String, String>) -> Number {
+    return 0 - toNumber(entry.ms)
+}
+
+fn plus(a: Number, b: Number) -> Number {
+    return a + b
+}
+
+fn describe(entry: Map<String, String>) -> Number {
+    println(" ", strPadRight(entry.method, 5), strPadRight(entry.path, 10), entry.status, strPadLeft(entry.ms, 4), "мс")
+    return 0
+}
+
+fn main() -> Number {
+    let path = "/tmp/oberih_access.log"
+    writeFile(path, "2026-09-28 GET /users 200 35\n2026-09-28 POST /orders 500 420\n2026-09-29 GET /orders 200 120\n2026-09-29 GET /health 200 4\n2026-09-30 POST /orders 503 900\n")
+
+    let lines = readLines(path)?
+    let entries = map(lines, parseLine)
+    println("Записів:", len(entries))
+
+    println("\nВсі, від найповільнішого:")
+    each(sortBy(entries, slowestFirst), describe)
+
+    let errors = filter(entries, isError)
+    println("\nПомилок 5xx:", len(errors), "| є будь-яка:", any(entries, isError), "| усі помилки:", all(entries, isError))
+
+    let times = map(entries, latency)
+    let total = reduce(times, plus, 0)
+    println("Середня затримка:", round(total / len(times)), "мс | макс:", max(times[0], max(times[1], times[4])))
+
+    // Групування за днем: Map<день, кількість>
+    let perDay = {}
+    for (e in entries) {
+        perDay[e.date] = mapGet(perDay, e.date, 0) + 1
+    }
+    println("\nЗапитів за день:", perDay)
+
+    // Дати: із рядка YYYY-MM-DD у момент часу й назад
+    let d = strSplit(entries[0].date, "-")
+    let t = timeFromParts(toNumber(d[0]), toNumber(d[1]), toNumber(d[2]), 12, 0, 0)
+    println("Перший запис:", isoTime(t), "| день тижня (1=Пн):", dateParts(t).weekday)
+    println("Через 30 днів:", isoTime(t + 30 * 24 * 3600 * 1000))
+
+    deleteFile(path)
+    println("Файл видалено:", !fileExists(path))
+    return 0
+}
