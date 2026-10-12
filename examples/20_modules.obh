@@ -1,0 +1,75 @@
+// 20_modules.obh — модульна система Oberih
+// Демонструє import з кількох файлів
+
+import "lib/math.obh"
+import "lib/strings.obh"
+
+// Тести модулів
+fn testMath() -> Bool {
+    let sum = add(10, 5)
+    let diff = subtract(10, 5)
+    let prod = multiply(3, 4)
+    let quot = divide(10, 2)
+    return sum == 15 && diff == 5 && prod == 12 && quot == 5
+}
+
+fn testStrings() -> Bool {
+    let r = repeat("ab", 3)
+    let p = padLeft("5", 3, "0")
+    let c = capitalize("hello")
+    return r == "ababab" && p == "005" && c == "Hello"
+}
+
+fn testFactorial() -> Bool {
+    return factorial(5) == 120
+}
+
+fn testFibonacci() -> Bool {
+    return fibonacci(10) == 55
+}
+
+fn main() -> Number {
+    println("=== Модульна система Oberih ===")
+    println("")
+
+    // Математика з lib/math.obh
+    println("Математика:")
+    println("  add(10, 5)      = " + toString(add(10, 5)))
+    println("  multiply(3, 4)  = " + toString(multiply(3, 4)))
+    println("  factorial(7)    = " + toString(factorial(7)))
+    println("  fibonacci(10)   = " + toString(fibonacci(10)))
+    println("  clamp(15, 0, 10)= " + toString(clamp(15, 0, 10)))
+    println("")
+
+    // Рядки з lib/strings.obh
+    println("Рядки:")
+    println("  repeat(\"ha\", 3) = " + repeat("ha", 3))
+    println("  padLeft(\"5\", 4, \"0\") = " + padLeft("5", 4, "0"))
+    println("  capitalize(\"oberih\") = " + capitalize("oberih"))
+    println("")
+
+    // Тести
+    println("Тести:")
+    if (testMath()) {
+        println("  Math:      OK")
+    } else {
+        println("  Math:      FAIL")
+    }
+    if (testStrings()) {
+        println("  Strings:   OK")
+    } else {
+        println("  Strings:   FAIL")
+    }
+    if (testFactorial()) {
+        println("  Factorial: OK")
+    } else {
+        println("  Factorial: FAIL")
+    }
+    if (testFibonacci()) {
+        println("  Fibonacci: OK")
+    } else {
+        println("  Fibonacci: FAIL")
+    }
+
+    return 0
+}

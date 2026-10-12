@@ -1,0 +1,41 @@
+# Автоматична перевірка: збірка + тести на Linux, Windows і macOS.
+# Запускається сама після кожного push/pull request у GitHub — без жодних
+# локальних інструментів (корисно, коли антивірус блокує cargo на своєму ПК).
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:   # можна запустити вручну кнопкою "Run workflow"
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false          # якщо впала одна ОС — решта все одно перевіряються
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Встановити Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Збірка (release)
+        run: cargo build --release
+
+      - name: Тести
+        run: cargo test --release
+
+      - name: Запуск прикладів
+        shell: bash
+        run: |
+          set -e
+          BIN=./target/release/oberih
+          $BIN version
+          $BIN run examples/22_maps.obh
+          $BIN run examples/23_stdlib.obh
+          $BIN run examples/24_lambdas_regex.obh
+          $BIN run examples/26_bitwise.obh
+          $BIN run examples/27_async_tasks.obh

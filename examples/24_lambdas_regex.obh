@@ -1,0 +1,52 @@
+// 24_lambdas_regex.obh — лямбди, замикання й регулярні вирази.
+
+fn makeMultiplier(factor: Number) -> Fn {
+    return fn(x) => x * factor
+}
+
+fn applyTwice(f: Fn(Number) -> Number, x: Number) -> Number {
+    return f(f(x))
+}
+
+fn main() -> Number {
+    println("=== Лямбди й замикання ===")
+    let double = makeMultiplier(2)
+    let triple = makeMultiplier(3)
+    println("double(5) =", double(5), "| triple(5) =", triple(5))
+    println("applyTwice:", applyTwice(double, 3), applyTwice(fn(x) => x + 1, 10))
+
+    let numbers = [1, 2, 3, 4, 5, 6, 7, 8]
+    let evens = filter(numbers, fn(x) => x - floor(x / 2) * 2 == 0)
+    let squares = map(evens, fn(x) => x * x)
+    let total = reduce(squares, fn(a, b) => a + b, 0)
+    println("парні:", evens, "-> квадрати:", squares, "-> сума:", total)
+
+    let people = [{"name": "Ірина", "age": 34}, {"name": "Богдан", "age": 21}, {"name": "Марта", "age": 45}]
+    let byAge = sortBy(people, fn(p) => p.age)
+    each(byAge, fn(p) => print(p.name, "(" + toString(p.age) + ") "))
+    println()
+
+    // Замикання, що рахує виклики (Map — посилальний тип, тож стан зберігається)
+    let state = {"count": 0}
+    let counter = fn() -> Number {
+        state["count"] = state["count"] + 1
+        return state["count"]
+    }
+    println("лічильник:", counter(), counter(), counter())
+
+    println("\n=== Регулярні вирази ===")
+    let logLine = "2026-09-28 12:34:56 ERROR user=42 msg=\"disk full\""
+    let re = regex("(\\d{4}-\\d{2}-\\d{2}) (\\d{2}:\\d{2}:\\d{2}) (\\w+) user=(\\d+)")?
+    let m = re.find(logLine)
+    println("дата:", m.groups[1], "| час:", m.groups[2], "| рівень:", m.groups[3], "| user:", m.groups[4])
+
+    let text = "Пишіть на admin@example.com або support@test.org за потреби"
+    let emails = reFindAll("[\\w.]+@[\\w.]+", text)
+    each(emails, fn(e) => println(" ", e.text))
+
+    println("маскування:", reReplaceAll("\\d", "картка 4111 1111 1111 1234", "*"))
+    println("розбиття:", reSplit("\\s*,\\s*", "яблуко, банан ,вишня"))
+    println("валідація email:", reTest("^[\\w.]+@[\\w.]+\\.\\w+$", "a@b.com"), reTest("^[\\w.]+@[\\w.]+\\.\\w+$", "неправильно"))
+
+    return 0
+}

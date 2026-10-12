@@ -1,0 +1,7 @@
+struct Point { x: Number, y: Number }
+
+fn distance(a: Point, b: Point) -> Number {
+    let dx = a.x - b.x
+    let dy = a.y - b.y
+    return sqrt(dx * dx + dy * dy)
+}

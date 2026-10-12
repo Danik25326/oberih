@@ -1,0 +1,38 @@
+// examples/lib/math.obh — математична бібліотека
+// Імпортується через: import "lib/math.obh"
+
+fn add(a: Number, b: Number) -> Number {
+    return a + b
+}
+
+fn subtract(a: Number, b: Number) -> Number {
+    return a - b
+}
+
+fn multiply(a: Number, b: Number) -> Number {
+    return a * b
+}
+
+fn divide(a: Number, b: Number) -> Number {
+    if (b == 0) {
+        return 0
+    }
+    return a / b
+}
+
+fn clamp(value: Number, minVal: Number, maxVal: Number) -> Number {
+    if (value < minVal) { return minVal }
+    if (value > maxVal) { return maxVal }
+    return value
+}
+
+fn factorial(n: Number) -> Number {
+    if (n <= 1) { return 1 }
+    return n * factorial(n - 1)
+}
+
+fn fibonacci(n: Number) -> Number {
+    if (n <= 0) { return 0 }
+    if (n == 1) { return 1 }
+    return fibonacci(n - 1) + fibonacci(n - 2)
+}

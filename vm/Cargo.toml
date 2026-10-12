@@ -1,0 +1,12 @@
+[package]
+name = "oberih"
+version = "0.1.0"
+edition = "2021"
+
+# Нуль зовнішніх залежностей.
+# Все — стандартна бібліотека Rust.
+[dependencies]
+
+[[bin]]
+name = "oberih"
+path = "src/main.rs"
