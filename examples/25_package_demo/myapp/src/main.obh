@@ -1,0 +1,11 @@
+// 25_package_demo — приклад проєкту з локальною залежністю.
+// Запуск: cd examples/25_package_demo/myapp && oberih run
+
+import "mathpkg/geometry.obh"
+
+fn main() -> Number {
+    let a = Point(0, 0)
+    let b = Point(3, 4)
+    println("Відстань:", distance(a, b))
+    return 0
+}

@@ -1,0 +1,83 @@
+// Мікробенчмарки VM. Запуск (обов'язково release):
+//   cargo build --release
+//   ./target/release/oberih run bench.obh
+// Кожен тест друкує час у мс. Порівнюйте ДО/ПІСЛЯ змін.
+
+struct Counter {
+    n: Number
+}
+
+fn Counter.inc(self: Counter) -> Number {
+    self.n = self.n + 1
+    return self.n
+}
+
+fn fib(n: Number) -> Number {
+    if (n < 2) {
+        return n
+    }
+    return fib(n - 1) + fib(n - 2)
+}
+
+fn add1(x: Number) -> Number {
+    return x + 1
+}
+
+fn main() -> Number {
+    // 1. Чиста арифметика в циклі (диспетчеризація без викликів)
+    let t = now()
+    let i = 0
+    let acc = 0
+    while (i < 2000000) {
+        acc = acc + i * 2
+        i = i + 1
+    }
+    println("1 арифметика, 2M ітерацій:   ", now() - t, "мс")
+
+    // 2. Рекурсивні виклики користувацьких функцій (CallGlobal)
+    t = now()
+    let f = fib(27)
+    println("2 fib(27) (~636k викликів):  ", now() - t, "мс")
+
+    // 3. Виклики простої функції в циклі
+    t = now()
+    i = 0
+    acc = 0
+    while (i < 500000) {
+        acc = add1(acc)
+        i = i + 1
+    }
+    println("3 add1() x 500k:              ", now() - t, "мс")
+
+    // 4. Методи struct (CallMethod)
+    t = now()
+    let c = Counter(0)
+    i = 0
+    while (i < 500000) {
+        c.inc()
+        i = i + 1
+    }
+    println("4 Counter.inc() x 500k:       ", now() - t, "мс")
+
+    // 5. Вбудовані функції в циклі
+    t = now()
+    i = 0
+    acc = 0
+    while (i < 500000) {
+        acc = acc + abs(floor(i / 3))
+        i = i + 1
+    }
+    println("5 abs(floor()) x 500k:        ", now() - t, "мс")
+
+    // 6. Рядки: конкатенація
+    t = now()
+    i = 0
+    let s = ""
+    while (i < 20000) {
+        s = s + "x"
+        i = i + 1
+    }
+    println("6 s = s + \"x\" x 20k:          ", now() - t, "мс")
+
+    return 0
+}

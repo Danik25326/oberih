@@ -1,0 +1,21 @@
+// 28_https_smoke.obh — перевірка HTTPS у CI: СПРАВЖНІЙ запит до публічного сервера.
+// Якщо TLS-провайдер налаштований неправильно (наприклад, обидва — ring і aws-lc-rs —
+// увімкнені й жоден не встановлено), запит повертає Err, і програма завершується з кодом 1.
+
+fn main() -> Number {
+    let r = httpGet("https://example.com", 20)
+    let resp = match r {
+        Ok(data) => data,
+        Err(e) => {
+            println("HTTPS НЕ ПРАЦЮЄ: " + toString(e))
+            exit(1)
+            return 1
+        }
+    }
+    println("HTTPS ok, status: " + toString(resp.status) + ", байтів у тілі: " + toString(len(resp.body)))
+    if (resp.status != 200) {
+        println("очікувався статус 200")
+        exit(1)
+    }
+    return 0
+}
