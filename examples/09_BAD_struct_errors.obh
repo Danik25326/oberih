@@ -1,0 +1,13 @@
+// Навмисні помилки struct-типів для перевірки typechecker'а.
+
+struct Point {
+    x: Number,
+    y: Number
+}
+
+fn main() -> Number {
+    let bad1 = Point("не число", 4)     // помилка: поле x має бути Number
+    let bad2 = Point(1, 2, 3)            // помилка: забагато аргументів
+    print(bad1.z)                        // помилка: немає такого поля
+    return 0
+}

@@ -1,0 +1,43 @@
+// 27_async_tasks.obh — кооперативний spawn: задачі перекриваються в часі.
+//
+// `spawn f(...)` створює легку задачу (не потік ОС). `sleep` і `join`
+// призупиняють САМЕ ЦЮ задачу, поки решта продовжує виконуватись.
+
+fn fetchMock(name: String, latencyMs: Number) -> Map<String, String> {
+    sleep(latencyMs)
+    return {"source": name, "latency": toString(latencyMs)}
+}
+
+fn pipeline(id: Number) -> Number {
+    // вкладені задачі: кожен «запит» породжує два паралельні «під-запити»
+    let a = spawn fetchMock("db", 40)
+    let b = spawn fetchMock("cache", 10)
+    a.join()
+    b.join()
+    return id * 10
+}
+
+fn main() -> Number {
+    let start = now()
+
+    println("=== Три «запити» одночасно: 300 + 100 + 200 мс ===")
+    let h1 = spawn fetchMock("slow-api", 300)
+    let h2 = spawn fetchMock("fast-api", 100)
+    let h3 = spawn fetchMock("mid-api", 200)
+    println(h1.join().source, h2.join().source, h3.join().source)
+    println("пройшло мс (≈300, а не 600):", now() - start)
+
+    println("\n=== 500 конвеєрів із вкладеними задачами ===")
+    let t2 = now()
+    let pipes = []
+    for (i in range(0, 500)) { append(pipes, spawn pipeline(i)) }
+    let total = 0
+    for (p in pipes) { total = total + p.join() }
+    println("сума:", total, "| мс:", now() - t2, "(послідовно було б ~25000)")
+
+    println("\n=== Таймаут очікування ===")
+    let slow = spawn fetchMock("hung-api", 5000)
+    println("join(0.1с):", slow.join(0.1))
+
+    return 0
+}

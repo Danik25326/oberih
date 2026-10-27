@@ -1,0 +1,22 @@
+[package]
+name = "oberih"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# rustls — TLS без OpenSSL залежності, чистий Rust
+rustls = { version = "0.23", features = ["ring"] }
+# pem-парсинг (SSL_CERT_FILE) з’явився в 1.9
+rustls-pki-types = { version = "1.9", features = ["std"] }
+webpki-roots = "0.26"
+
+[[bin]]
+name = "oberih"
+path = "src/main.rs"
+
+# Оптимізації релізної збірки: LTO + один codegen-unit дозволяють інлайнити
+# гарячий цикл диспетчеризації інструкцій VM між модулями (vm/gc/stdlib).
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
