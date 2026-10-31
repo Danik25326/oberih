@@ -1,0 +1,40 @@
+// 30_docker_serve.obh — мінімальний сервіс для перевірки контейнера.
+//
+//   docker run --rm -p 8080:8080 oberih run /opt/oberih/examples/30_docker_serve.obh
+//   curl http://localhost:8080/health
+//   curl 'http://localhost:8080/hello?name=Docker'
+//   curl http://localhost:8080/slow          # відповідає через 2 с (для перевірки graceful shutdown)
+//
+// Слухає 0.0.0.0:8080 (за замовчуванням), тож доступний ззовні контейнера.
+
+struct Request {
+    method:  String,
+    path:    String,
+    query:   Map<String, String>,
+    headers: Map<String, String>,
+    body:    String,
+    remote:  String
+}
+
+struct Response {
+    status:  Number,
+    body:    String,
+    headers: Map<String, String>
+}
+
+fn handle(req: Request) -> Response {
+    if (req.path == "/health") {
+        return Response(200, "ok", {})
+    }
+    if (req.path == "/slow") {
+        sleep(2000)
+        return Response(200, "done", {})
+    }
+    return Response(200, "привіт, " + req.query["name"], {})
+}
+
+fn main() -> Number {
+    let r = serve(8080, handle)
+    println("сервер зупинено")
+    return 0
+}

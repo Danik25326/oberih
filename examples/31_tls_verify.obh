@@ -1,0 +1,55 @@
+// 31_tls_verify.obh — перевірка безпеки: HTTPS мусить ВІДХИЛЯТИ погані сертифікати.
+//
+// Звертається до публічних тестових серверів badssl.com, чиї сертифікати свідомо некоректні:
+//   expired.badssl.com        — термін дії сертифіката минув
+//   wrong.host.badssl.com     — сертифікат виданий на інше ім'я
+//   self-signed.badssl.com    — самопідписаний
+//   untrusted-root.badssl.com — ланцюг веде до недовіреного кореня
+// Якщо ХОЧА Б ОДИН запит буде прийнято — програма завершується з кодом 1 (діра в безпеці).
+// Контроль: звичайний https://example.com має проходити (інакше перевірка нічого не доводить).
+
+fn check(host: String) -> Number {
+    let r = httpGet("https://" + host, 15)
+    let verdict = match r {
+        Ok(data) => "ПРИЙНЯТО",
+        Err(e) => toString(e)
+    }
+    if (verdict == "ПРИЙНЯТО") {
+        println("НЕБЕЗПЕЧНО: " + host + " — некоректний сертифікат ПРИЙНЯТО")
+        return 1
+    }
+    if (strContains(strLower(verdict), "certificate")) {
+        println("ok: " + host + " відхилено: " + verdict)
+        return 0
+    }
+    println("НЕВИЗНАЧЕНО: " + host + " — помилка не пов'язана із сертифікатом: " + verdict)
+    return 1
+}
+
+fn control() -> Number {
+    let r = httpGet("https://example.com", 15)
+    let verdict = match r {
+        Ok(data) => "ok",
+        Err(e) => toString(e)
+    }
+    if (verdict == "ok") {
+        println("контроль: https://example.com прийнято (ok)")
+        return 0
+    }
+    println("КОНТРОЛЬ НЕ ПРОЙДЕНО: https://example.com відхилено: " + verdict)
+    return 1
+}
+
+fn main() -> Number {
+    let failures = control()
+    failures = failures + check("expired.badssl.com")
+    failures = failures + check("wrong.host.badssl.com")
+    failures = failures + check("self-signed.badssl.com")
+    failures = failures + check("untrusted-root.badssl.com")
+    if (failures > 0) {
+        println("ПРОВАЛ перевірки TLS, проблем: " + toString(failures))
+        exit(1)
+    }
+    println("TLS коректно відхиляє погані сертифікати")
+    return 0
+}

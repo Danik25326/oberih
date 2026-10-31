@@ -1,0 +1,98 @@
+# Профіль VM без профайлера на машині розробника (запускається вручну).
+#
+# Actions -> Profile -> Run workflow. Використовує valgrind/callgrind: рахує ВИКОНАНІ
+# інструкції процесора (а не вибірково, як perf), тому результат детермінований і не
+# залежить від шуму спільного раннера. Показує, які рядки коду VM найдорожчі.
+#
+# Результат: таблиця в Summary + повний звіт у артефакті "callgrind-report".
+name: Profile
+
+on:
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: "Кількість ітерацій гарячого циклу (під valgrind повільно: 300000 ≈ 20 с)"
+        default: "300000"
+      bench:
+        description: "Який приклад профілювати: loop (арифметика) або calls (виклики функцій)"
+        default: "loop"
+
+jobs:
+  profile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Встановлення valgrind
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+
+      # Профільна збірка: ті самі оптимізації, але з таблицею рядків для звіту.
+      - name: Збірка з відлагоджувальною інформацією
+        env:
+          CARGO_PROFILE_RELEASE_DEBUG: line-tables-only
+        run: cargo build --release
+
+      - name: Підготовка тестової програми
+        run: |
+          N="${{ inputs.iterations }}"
+          if [ "${{ inputs.bench }}" = "calls" ]; then
+            cat > /tmp/prof.obh <<PROG
+          fn add1(x: Number) -> Number {
+              return x + 1
+          }
+          fn main() -> Number {
+              let i = 0
+              let acc = 0
+              while (i < $N) {
+                  acc = add1(acc)
+                  i = i + 1
+              }
+              return acc
+          }
+          PROG
+          else
+            cat > /tmp/prof.obh <<PROG
+          fn main() -> Number {
+              let i = 0
+              let acc = 0
+              while (i < $N) {
+                  acc = acc + i * 2
+                  i = i + 1
+              }
+              return acc
+          }
+          PROG
+          fi
+          sed -i 's/^          //' /tmp/prof.obh
+          cat /tmp/prof.obh
+          ./target/release/oberih run /tmp/prof.obh
+
+      - name: Профілювання (callgrind)
+        run: |
+          valgrind --tool=callgrind --callgrind-out-file=/tmp/callgrind.out \
+            ./target/release/oberih run /tmp/prof.obh 2>&1 | tail -15
+
+      - name: Звіт
+        run: |
+          callgrind_annotate --auto=yes --show-percs=yes /tmp/callgrind.out > /tmp/report.txt || true
+          echo "===== Функції за кількістю інструкцій ====="
+          head -60 /tmp/report.txt
+          echo
+          echo "===== Найдорожчі рядки коду VM ====="
+          python3 .github/scripts/top_lines.py /tmp/report.txt 45 vm/mod.rs | tee /tmp/top_lines.txt
+          {
+            echo "### Профіль VM (${{ inputs.bench }}, ${{ inputs.iterations }} ітерацій)"
+            echo
+            echo '```'
+            cat /tmp/top_lines.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: callgrind-report
+          path: |
+            /tmp/report.txt
+            /tmp/top_lines.txt

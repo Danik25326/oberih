@@ -1,0 +1,136 @@
+# Випуск версії: готові бінарники для Linux/macOS/Windows і Docker-образ.
+#
+#   git tag v0.3.0 && git push origin v0.3.0
+#
+# Після push тега збираються архіви (з контрольними сумами SHA-256), створюється
+# GitHub Release і публікується образ у GHCR. Кнопка "Run workflow" лише збирає
+# артефакти для перевірки, нічого не публікуючи.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write     # створення Release
+  packages: write     # публікація образу в GHCR
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # glibc-збірка на старішому Ubuntu — запускається на більшості сучасних дистрибутивів
+          - { name: linux-x86_64,      os: ubuntu-22.04,  target: x86_64-unknown-linux-gnu }
+          # повністю статичний бінарник: працює на будь-якому Linux (Alpine, scratch-образи)
+          - { name: linux-x86_64-musl, os: ubuntu-latest, target: x86_64-unknown-linux-musl, musl: true }
+          - { name: macos-arm64,       os: macos-latest,  target: aarch64-apple-darwin }
+          # крос-збірка на arm-раннері: у CI не запускається, лише збирається
+          - { name: macos-x86_64,      os: macos-latest,  target: x86_64-apple-darwin, cross: true }
+          - { name: windows-x86_64,    os: windows-latest, target: x86_64-pc-windows-msvc }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: musl-tools
+        if: matrix.musl
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Збірка
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Перевірка бінарника
+        if: ${{ !matrix.cross }}
+        shell: bash
+        run: |
+          set -e
+          BIN=target/${{ matrix.target }}/release/oberih
+          [ -f "$BIN.exe" ] && BIN="$BIN.exe"
+          "$BIN" version
+          "$BIN" run examples/22_maps.obh
+          "$BIN" run examples/28_https_smoke.obh
+
+      - name: Пакування
+        shell: bash
+        run: |
+          set -e
+          VERSION="${GITHUB_REF_NAME}"
+          NAME="oberih-${VERSION}-${{ matrix.name }}"
+          BIN=target/${{ matrix.target }}/release/oberih
+          [ -f "$BIN.exe" ] && BIN="$BIN.exe"
+          mkdir -p "dist/$NAME"
+          cp "$BIN" "dist/$NAME/"
+          cp README.md "dist/$NAME/"
+          cp -r examples "dist/$NAME/examples"
+          cd dist
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            powershell -NoProfile -Command "Compress-Archive -Path '$NAME' -DestinationPath '$NAME.zip'"
+            ARCHIVE="$NAME.zip"
+          else
+            tar czf "$NAME.tar.gz" "$NAME"
+            ARCHIVE="$NAME.tar.gz"
+          fi
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+          else
+            shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
+          fi
+          ls -la
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+
+  release:
+    name: GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Загальний файл контрольних сум
+        run: |
+          cd dist
+          cat *.sha256 > SHA256SUMS
+          rm *.sha256
+          ls -la
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+
+  docker:
+    name: Docker-образ (GHCR)
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Вхід у GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Збірка й публікація
+        run: |
+          set -e
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          docker build -t "$IMAGE:${GITHUB_REF_NAME}" -t "$IMAGE:latest" .
+          docker run --rm "$IMAGE:${GITHUB_REF_NAME}" version
+          docker push "$IMAGE:${GITHUB_REF_NAME}"
+          docker push "$IMAGE:latest"

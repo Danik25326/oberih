@@ -1,0 +1,31 @@
+[package]
+name = "oberih"
+version = "0.3.0"
+edition = "2021"
+
+[dependencies]
+# rustls — TLS без OpenSSL залежності, чистий Rust
+# default-features = false: не збираємо зайвий провайдер aws-lc-rs (він потребує cmake/NASM на
+# Windows і сильно збільшує час збірки). Провайдер ring встановлюється явно в main().
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+# pem-парсинг (SSL_CERT_FILE) з’явився в 1.9
+rustls-pki-types = { version = "1.9", features = ["std"] }
+# Перехоплення SIGTERM/SIGINT (Unix) і Ctrl+C (Windows) для graceful-зупинки сервера.
+ctrlc = { version = "3", features = ["termination"] }
+webpki-roots = "0.26"
+
+[[bin]]
+name = "oberih"
+path = "src/main.rs"
+
+# Оптимізації релізної збірки: LTO + один codegen-unit дозволяють інлайнити
+# гарячий цикл диспетчеризації інструкцій VM між модулями (vm/gc/stdlib).
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+
+# Для профілювання (Visual Studio Profiler / Superluminal / samply): у release-збірці
+# є імена функцій і рядки. На швидкість виконання не впливає (лише розмір .exe).
+# Для фінального релізу цей рядок можна закоментувати.
+# debug = "line-tables-only"

@@ -1,0 +1,61 @@
+# Порівняння швидкості двох версій на ОДНІЙ машині (запускається вручну).
+#
+# Actions -> Perf -> Run workflow, у полі baseline_ref вкажіть гілку, тег або SHA,
+# з якою порівнювати. Результат — у таблиці на сторінці запуску (Summary) і в логу.
+#
+# Щоб порівняти з кодом ДО оптимізацій, створіть гілку baseline-original з оригінального
+# архіву (див. README, розділ «Замір швидкості») і вкажіть її в baseline_ref.
+#
+# Чому окремо: окремі запуски бенчмарка на спільних раннерах мають розкид до 2x,
+# тому швидкість можна оцінювати лише порівнянням у ТОМУ Ж завданні, з чергуванням.
+name: Perf
+
+on:
+  workflow_dispatch:
+    inputs:
+      baseline_ref:
+        description: "З чим порівнювати (гілка, тег або SHA)"
+        default: "baseline-original"
+      runs:
+        description: "Кількість чергованих запусків на збірку"
+        default: "7"
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Збірка поточної версії
+        run: |
+          cargo build --release
+          cp target/release/oberih /tmp/oberih-new
+          /tmp/oberih-new version
+
+      - name: Збірка базової версії
+        run: |
+          REF="${{ inputs.baseline_ref }}"
+          SHA=""
+          for cand in "$REF" "origin/$REF" "refs/tags/$REF"; do
+            if SHA=$(git rev-parse --verify --quiet "${cand}^{commit}"); then break; fi
+            SHA=""
+          done
+          if [ -z "$SHA" ]; then
+            echo "::error::Не знайдено '$REF'. Вкажіть існуючу гілку, тег або SHA (а для порівняння з кодом до оптимізацій створіть гілку baseline-original — див. README)."
+            echo "Доступні гілки:"; git branch -a
+            exit 1
+          fi
+          git worktree add --detach /tmp/base "$SHA"
+          cd /tmp/base
+          git log -1 --oneline
+          cargo build --release
+          cp target/release/oberih /tmp/oberih-old
+          /tmp/oberih-old version
+
+      # Обидві збірки запускають ОДИН І ТОЙ САМИЙ файл бенчмарка з поточного коміту.
+      - name: Порівняння
+        run: python3 .github/scripts/compare_bench.py /tmp/oberih-old /tmp/oberih-new bench/bench.obh "${{ inputs.runs }}"

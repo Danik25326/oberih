@@ -1,0 +1,126 @@
+# Автоматична перевірка: збірка + тести на Linux, Windows і macOS.
+# Запускається сама після кожного push/pull request у GitHub — без жодних
+# локальних інструментів (корисно, коли антивірус блокує cargo на своєму ПК).
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:   # можна запустити вручну кнопкою "Run workflow"
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false          # якщо впала одна ОС — решта все одно перевіряються
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Встановити Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Збірка (release)
+        run: cargo build --release
+
+      - name: Тести
+        run: cargo test --release
+
+      - name: Запуск прикладів
+        shell: bash
+        run: |
+          set -e
+          BIN=./target/release/oberih
+          $BIN version
+          $BIN run examples/22_maps.obh
+          $BIN run examples/23_stdlib.obh
+          $BIN run examples/24_lambdas_regex.obh
+          $BIN run examples/26_bitwise.obh
+          $BIN run examples/27_async_tasks.obh
+
+      # Реальний HTTPS (TLS) — локальні тести перевіряють лише http://127.0.0.1,
+      # тож без цього кроку помилка налаштування TLS лишилась би непоміченою.
+      - name: HTTPS (реальна мережа)
+        shell: bash
+        run: ./target/release/oberih run examples/28_https_smoke.obh
+
+      # Безпека: TLS має ВІДХИЛЯТИ прострочені, з неправильним іменем, самопідписані й недовірені
+      # сертифікати (інакше HTTPS-клієнт не захищає від підміни сервера).
+      - name: TLS відхиляє погані сертифікати
+        shell: bash
+        run: ./target/release/oberih run examples/31_tls_verify.obh
+
+      # HTTP-сервер: serve + одночасні клієнти + stopServer у одному процесі.
+      - name: HTTP-сервер
+        shell: bash
+        run: ./target/release/oberih run examples/29_http_server.obh
+
+      # Заміри швидкості на всіх трьох ОС (порівнюйте між запусками; розкид 10-20% — норма).
+      - name: Бенчмарк
+        if: always()
+        shell: bash
+        run: ./target/release/oberih run bench/bench.obh
+
+  # Docker-образ: збірка, запуск, доступність ззовні контейнера і швидка зупинка за SIGTERM.
+  docker:
+    name: docker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Збірка образу
+        run: docker build -t oberih:ci .
+
+      - name: Версія в контейнері
+        run: docker run --rm oberih:ci version
+
+      - name: Приклад із сервером усередині контейнера
+        run: docker run --rm oberih:ci run /opt/oberih/examples/29_http_server.obh
+
+      - name: Сервіс, доступний ззовні контейнера
+        run: |
+          docker run -d --name oberih-srv -p 8080:8080 oberih:ci run /opt/oberih/examples/30_docker_serve.obh
+          ok=0
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8080/health >/dev/null 2>&1; then ok=1; break; fi
+            sleep 1
+          done
+          test "$ok" = "1"
+          test "$(curl -fsS http://localhost:8080/health)" = "ok"
+          test "$(curl -fsS 'http://localhost:8080/hello?name=Docker')" = "привіт, Docker"
+
+      # Без tini процес із PID 1 ігнорував би SIGTERM, і `docker stop` чекав би 10 с до SIGKILL.
+      - name: Швидка зупинка за SIGTERM
+        run: |
+          start=$(date +%s)
+          docker stop -t 10 oberih-srv
+          end=$(date +%s)
+          echo "зупинено за $((end - start)) с"
+          test $((end - start)) -lt 8
+
+      # Graceful shutdown: SIGTERM не має обривати запит, що вже виконується. Повільний запит
+      # (2 с) іде у фоні, через 0,5 с контейнер зупиняється — запит усе одно має завершитись.
+      - name: Graceful shutdown за SIGTERM (запит не обривається)
+        run: |
+          docker run -d --name oberih-srv2 -p 8080:8080 oberih:ci run /opt/oberih/examples/30_docker_serve.obh
+          ok=0
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8080/health >/dev/null 2>&1; then ok=1; break; fi
+            sleep 1
+          done
+          test "$ok" = "1"
+          curl -fsS http://localhost:8080/slow > /tmp/slow.out &
+          CURL_PID=$!
+          sleep 0.5
+          docker stop -t 10 oberih-srv2
+          wait $CURL_PID
+          test "$(cat /tmp/slow.out)" = "done"
+          docker logs oberih-srv2 2>&1 | grep -q "отримано сигнал завершення"
+
+      - name: Логи контейнерів (якщо щось пішло не так)
+        if: failure()
+        run: |
+          docker logs oberih-srv || true
+          docker logs oberih-srv2 || true
