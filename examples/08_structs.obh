@@ -1,0 +1,20 @@
+// Демонстрація struct-типів: тепер поля мають РЕАЛЬНІ, перевірювані типи,
+// а не Dynamic. Компілятор ловить помилки типу поля і кількості аргументів.
+
+struct Point {
+    x: Number,
+    y: Number
+}
+
+fn describePoint(p: Point) -> String {
+    return "точка"
+}
+
+fn main() -> Number {
+    let origin = Point(0, 0)
+    let point = Point(3, 4)
+    print("point.x =", point.x)
+    print("point.y =", point.y)
+    print(describePoint(point))
+    return 0
+}

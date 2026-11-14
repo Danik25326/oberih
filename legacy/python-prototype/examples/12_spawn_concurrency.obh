@@ -1,0 +1,17 @@
+resilient fn fetchSlowly(id: String) -> String
+    deadline(3s)
+    retryBudget(1)
+    timeout(2s)
+{
+    return http.get("/slow-endpoint/" + id)
+}
+
+fn main() -> Number {
+    let h1 = spawn fetchSlowly("A")
+    let h2 = spawn fetchSlowly("B")
+    let h3 = spawn fetchSlowly("C")
+    print(h1.join())
+    print(h2.join())
+    print(h3.join())
+    return 0
+}

@@ -1,0 +1,86 @@
+// 29_http_server.obh — HTTP-сервер і його клієнти в ОДНОМУ процесі.
+//
+// serve(порт, обробник, хост) запускає сервер; кожен запит виконується в окремій
+// кооперативній задачі, тож повільний обробник (sleep, httpGet...) не блокує решту.
+// Обробник отримує Request і повертає Response (або Map / рядок — див. README).
+//
+// Запуск: oberih run examples/29_http_server.obh
+// У власному сервісі просто викличте serve(8080, handle) у main і не викликайте stopServer.
+
+// Поля Request заповнює сервер: оголосіть struct з ТАКИМИ полями.
+struct Request {
+    method:  String,
+    path:    String,
+    query:   Map<String, String>,
+    headers: Map<String, String>,
+    body:    String,
+    remote:  String
+}
+
+struct Response {
+    status:  Number,
+    body:    String,
+    headers: Map<String, String>
+}
+
+fn handle(req: Request) -> Response {
+    if (req.path == "/stop") {
+        stopServer()
+        return Response(200, "зупиняюсь", {})
+    }
+    if (req.path == "/slow") {
+        sleep(300)
+        return Response(200, "повільна відповідь", {})
+    }
+    if (req.method == "POST") {
+        return Response(201, "отримано: " + req.body, {"X-Source": "oberih"})
+    }
+    return Response(200, "привіт, " + req.query["name"], {})
+}
+
+fn get(url: String) -> Number {
+    let r = httpGet(url, 10)
+    let resp = match r {
+        Ok(data) => data,
+        Err(e) => {
+            println("запит не вдався: " + toString(e))
+            exit(1)
+            return 1
+        }
+    }
+    println(url + " -> " + toString(resp.status) + " " + resp.body)
+    return resp.status
+}
+
+fn clients() -> Number {
+    let a = get("http://127.0.0.1:18080/hello?name=Oberih")
+
+    let p = httpPost("http://127.0.0.1:18080/data", "дані", 10)
+    println("POST -> " + toString(p))
+
+    // Три повільні запити одночасно: мають завершитись разом (~300 мс), а не за 900 мс.
+    let t = now()
+    let h1 = spawn get("http://127.0.0.1:18080/slow")
+    let h2 = spawn get("http://127.0.0.1:18080/slow")
+    let h3 = spawn get("http://127.0.0.1:18080/slow")
+    h1.join()
+    h2.join()
+    h3.join()
+    let elapsed = now() - t
+    println("3 повільні запити: " + toString(elapsed) + " мс")
+    if (elapsed > 800) {
+        println("ПОМИЛКА: запити виконувались послідовно")
+        exit(1)
+    }
+
+    let b = get("http://127.0.0.1:18080/stop")
+    return 0
+}
+
+fn main() -> Number {
+    let c = spawn clients()
+    let r = serve(18080, handle, "127.0.0.1")
+    println("сервер зупинено")
+    c.join()
+    return 0
+}

@@ -1,0 +1,23 @@
+// 32_observability.obh — структуровані логи й метрики.
+//
+// Логи: один рядок = одна подія. У терміналі — читабельний текст, у контейнері (stdout не
+// термінал) — JSON, який зручно збирати Loki/ELK/CloudWatch. Формат і рівень:
+//   OBERIH_LOG_FORMAT=json|text      OBERIH_LOG_LEVEL=debug|info|warn|error
+// Метрики: текстовий формат Prometheus. Вбудовані метрики сервера (запити, тривалість,
+// запити в обробці) додаються автоматично, власні лічильники — metricInc / metricAdd.
+//
+// Запуск: oberih run examples/32_observability.obh
+
+fn main() -> Number {
+    logInfo("старт", {"service": "demo", "version": 3})
+    logWarn("попередження", {"reason": "тест"})
+    logError("помилка", {"code": 500})
+    logDebug("приховано за замовчуванням")
+
+    metricInc("jobs_done")
+    metricInc("jobs_done")
+    metricAdd("bytes_processed", 1024)
+
+    println(metrics())
+    return 0
+}

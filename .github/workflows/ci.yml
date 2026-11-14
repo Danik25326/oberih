@@ -1,0 +1,193 @@
+# Автоматична перевірка: збірка + тести на Linux, Windows і macOS.
+# Запускається сама після кожного push/pull request у GitHub — без жодних
+# локальних інструментів (корисно, коли антивірус блокує cargo на своєму ПК).
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:   # можна запустити вручну кнопкою "Run workflow"
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false          # якщо впала одна ОС — решта все одно перевіряються
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Встановити Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Збірка (release)
+        run: cargo build --release
+
+      - name: Тести
+        run: cargo test --release
+
+      # Розширення VS Code: синтаксис JS і валідність JSON (на Linux; Node є на runner'і).
+      # Сам LSP-сервер перевіряє `cargo test` (src/lsp.rs, tests/lsp_e2e.rs).
+      - name: Розширення VS Code (перевірка файлів)
+        if: runner.os == 'Linux'
+        run: |
+          node --check editor/vscode-oberih/extension.js
+          for f in package.json language-configuration.json syntaxes/oberih.tmLanguage.json; do
+            node -e "JSON.parse(require('fs').readFileSync('editor/vscode-oberih/$f','utf8'))" && echo "OK $f"
+          done
+
+      - name: Запуск прикладів
+        shell: bash
+        run: |
+          set -e
+          BIN=./target/release/oberih
+          $BIN version
+          $BIN run examples/22_maps.obh
+          $BIN run examples/23_stdlib.obh
+          $BIN run examples/24_lambdas_regex.obh
+          $BIN run examples/26_bitwise.obh
+          $BIN run examples/27_async_tasks.obh
+
+      # Підпис вебхука й JWT: очікувані значення пораховані НЕЗАЛЕЖНО (Python hashlib/hmac,
+      # токен збігається з відомим токеном jwt.io), тож це перевіряє коректність криптопримітивів
+      # на всіх ОС, а не лише «програма не впала».
+      - name: Приклад вебхук + JWT (еталонні значення)
+        shell: bash
+        run: |
+          set -e
+          ./target/release/oberih run examples/33_webhook_jwt.obh | tr -d '\r' > /tmp/ex33.out
+          cat /tmp/ex33.out
+          grep -qx 'підпис вебхука: c1e9af7c6fc4e9f5c29bf209348af2b56613ff9d4f97fab63c10ef5771af9c45' /tmp/ex33.out
+          grep -qx 'вірний підпис: true' /tmp/ex33.out
+          grep -qx 'підроблене тіло: false' /tmp/ex33.out
+          grep -qx 'jwt: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c' /tmp/ex33.out
+          grep -qx 'чужий ключ: підпис недійсний' /tmp/ex33.out
+          grep -qx 'uuid v4, 36 символів: true' /tmp/ex33.out
+
+      # HTTPS у справжньому бінарнику ПЕРЕВІРЯЄТЬСЯ без інтернету: `cargo test` вище містить
+      # tests/https_e2e.rs (бінарник робить httpGet до локального TLS-сервера з власним CA).
+      # Цей крок лишається лише як СПОСТЕРЕЖЕННЯ за реальною мережею (example.com): його збій
+      # через чужу службу не має червонити збірку, тому continue-on-error.
+      - name: HTTPS (реальна мережа, інформативно)
+        shell: bash
+        continue-on-error: true
+        run: ./target/release/oberih run examples/28_https_smoke.obh
+
+      # Безпека: TLS має ВІДХИЛЯТИ прострочені, з неправильним іменем, самопідписані й недовірені
+      # сертифікати (інакше HTTPS-клієнт не захищає від підміни сервера).
+      - name: TLS відхиляє погані сертифікати
+        shell: bash
+        run: ./target/release/oberih run examples/31_tls_verify.obh
+
+      # Спостережуваність: структуровані логи (JSON поза терміналом), рівні, текстовий формат,
+      # метрики Prometheus. Вивід перевіряється, а не лише запускається.
+      - name: Логи й метрики
+        shell: bash
+        run: |
+          set -e
+          ./target/release/oberih run examples/32_observability.obh | tr -d '\r' > /tmp/obs.out
+          cat /tmp/obs.out
+          # stdout не термінал -> JSON; кожен рядок — окрема валідна подія
+          grep -q '"level":"info","msg":"старт","service":"demo","version":3' /tmp/obs.out
+          grep -q '"level":"warn","msg":"попередження","reason":"тест"' /tmp/obs.out
+          grep -q '"level":"error","msg":"помилка","code":500' /tmp/obs.out
+          # debug за замовчуванням відфільтровано
+          ! grep -q 'приховано за замовчуванням' /tmp/obs.out
+          # користувацькі й вбудовані метрики
+          grep -q '^jobs_done 2$' /tmp/obs.out
+          grep -q '^bytes_processed 1024$' /tmp/obs.out
+          grep -q '^# TYPE oberih_http_requests_total counter$' /tmp/obs.out
+          grep -q '^# TYPE oberih_http_request_duration_seconds histogram$' /tmp/obs.out
+          # текстовий формат і рівень debug
+          OBERIH_LOG_FORMAT=text OBERIH_LOG_LEVEL=debug ./target/release/oberih run examples/32_observability.obh | tr -d '\r' > /tmp/obs_text.out
+          grep -q ' INFO  старт service=demo version=3' /tmp/obs_text.out
+          grep -q ' DEBUG приховано за замовчуванням' /tmp/obs_text.out
+
+      # HTTP-сервер: serve + одночасні клієнти + stopServer у одному процесі.
+      - name: HTTP-сервер
+        shell: bash
+        run: ./target/release/oberih run examples/29_http_server.obh
+
+      # Заміри швидкості на всіх трьох ОС (порівнюйте між запусками; розкид 10-20% — норма).
+      - name: Бенчмарк
+        if: always()
+        shell: bash
+        run: ./target/release/oberih run bench/bench.obh
+
+  # Docker-образ: збірка, запуск, доступність ззовні контейнера і швидка зупинка за SIGTERM.
+  docker:
+    name: docker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Збірка образу
+        run: docker build -t oberih:ci .
+
+      - name: Версія в контейнері
+        run: docker run --rm oberih:ci version
+
+      - name: Приклад із сервером усередині контейнера
+        run: docker run --rm oberih:ci run /opt/oberih/examples/29_http_server.obh
+
+      - name: Сервіс, доступний ззовні контейнера
+        run: |
+          docker run -d --name oberih-srv -p 8080:8080 -e OBERIH_ACCESS_LOG=1 oberih:ci run /opt/oberih/examples/30_docker_serve.obh
+          ok=0
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8080/health >/dev/null 2>&1; then ok=1; break; fi
+            sleep 1
+          done
+          test "$ok" = "1"
+          test "$(curl -fsS http://localhost:8080/health)" = "ok"
+          test "$(curl -fsS 'http://localhost:8080/hello?name=Docker')" = "привіт, Docker"
+
+      # Метрики Prometheus віддаються з маршруту, а access-лог (OBERIH_ACCESS_LOG=1) пише JSON-рядок
+      # на кожен запит у stdout контейнера.
+      - name: Метрики й access-лог у контейнері
+        run: |
+          curl -fsS http://localhost:8080/metrics > /tmp/metrics.out
+          grep -q '^# TYPE oberih_http_requests_total counter$' /tmp/metrics.out
+          grep -q 'oberih_http_requests_total{method="GET",status="200"}' /tmp/metrics.out
+          grep -q '^oberih_http_request_duration_seconds_count ' /tmp/metrics.out
+          docker logs oberih-srv 2>&1 | grep -q '"msg":"http_request"'
+          docker logs oberih-srv 2>&1 | grep -q '"path":"/health"'
+          docker logs oberih-srv 2>&1 | grep -q '"status":200'
+          echo "--- приклад access-логу:"
+          docker logs oberih-srv 2>&1 | grep '"msg":"http_request"' | head -2
+
+      # Без tini процес із PID 1 ігнорував би SIGTERM, і `docker stop` чекав би 10 с до SIGKILL.
+      - name: Швидка зупинка за SIGTERM
+        run: |
+          start=$(date +%s)
+          docker stop -t 10 oberih-srv
+          end=$(date +%s)
+          echo "зупинено за $((end - start)) с"
+          test $((end - start)) -lt 8
+
+      # Graceful shutdown: SIGTERM не має обривати запит, що вже виконується. Повільний запит
+      # (2 с) іде у фоні, через 0,5 с контейнер зупиняється — запит усе одно має завершитись.
+      - name: Graceful shutdown за SIGTERM (запит не обривається)
+        run: |
+          docker run -d --name oberih-srv2 -p 8080:8080 oberih:ci run /opt/oberih/examples/30_docker_serve.obh
+          ok=0
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8080/health >/dev/null 2>&1; then ok=1; break; fi
+            sleep 1
+          done
+          test "$ok" = "1"
+          curl -fsS http://localhost:8080/slow > /tmp/slow.out &
+          CURL_PID=$!
+          sleep 0.5
+          docker stop -t 10 oberih-srv2
+          wait $CURL_PID
+          test "$(cat /tmp/slow.out)" = "done"
+          docker logs oberih-srv2 2>&1 | grep -q "отримано сигнал завершення"
+
+      - name: Логи контейнерів (якщо щось пішло не так)
+        if: failure()
+        run: |
+          docker logs oberih-srv || true
+          docker logs oberih-srv2 || true

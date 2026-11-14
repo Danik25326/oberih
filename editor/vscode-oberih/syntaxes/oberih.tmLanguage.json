@@ -1,0 +1,170 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Oberih",
+  "scopeName": "source.oberih",
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#durations"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#declarations"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#modifiers"
+    },
+    {
+      "include": "#constants"
+    },
+    {
+      "include": "#types"
+    },
+    {
+      "include": "#builtins"
+    },
+    {
+      "include": "#calls"
+    },
+    {
+      "include": "#operators"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.oberih",
+          "match": "//.*$"
+        }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.oberih",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.oberih",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "durations": {
+      "patterns": [
+        {
+          "name": "constant.numeric.duration.oberih",
+          "match": "\\b[0-9]+(\\.[0-9]+)?(ms|s|m)\\b"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.oberih",
+          "match": "\\b[0-9]+(\\.[0-9]+)?\\b"
+        }
+      ]
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "match": "\\b(struct|enum)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "storage.type.oberih"
+            },
+            "2": {
+              "name": "entity.name.type.oberih"
+            }
+          }
+        },
+        {
+          "match": "\\bfn\\s+(?:([A-Za-z_][A-Za-z0-9_]*)\\.)?([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "entity.name.type.oberih"
+            },
+            "2": {
+              "name": "entity.name.function.oberih"
+            }
+          }
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.oberih",
+          "match": "\\b(import|return|match|spawn|while|else|for|let|if|in)\\b"
+        },
+        {
+          "name": "storage.type.function.oberih",
+          "match": "\\b(resilient|private|struct|enum|fn)\\b"
+        }
+      ]
+    },
+    "modifiers": {
+      "patterns": [
+        {
+          "name": "keyword.other.modifier.oberih",
+          "match": "\\b(emergencyFallback|circuitBreaker|retryBudget|idempotent|rateLimit|bulkhead|deadline|fallback|durable|hedging|retries|timeout|budget|traced|cache)\\b(?=\\s*\\()"
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.oberih",
+          "match": "\\b(false|true)\\b"
+        },
+        {
+          "name": "support.function.constructor.oberih",
+          "match": "\\b(Err|Ok)\\b(?=\\()"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.oberih",
+          "match": "\\b(Number|Result|String|Bool|List|Map|Fn)\\b"
+        }
+      ]
+    },
+    "builtins": {
+      "patterns": [
+        {
+          "name": "support.function.builtin.oberih",
+          "match": "\\b(base64UrlDecodeToHex|base64UrlEncodeHex|base64DecodeToHex|base64EncodeHex|base64UrlDecode|base64UrlEncode|gcCollectCycles|constantTimeEq|hmacSha256Hex|jsonStringify|strStartsWith|timeFromParts|base64Decode|base64Encode|reReplaceAll|parseNumber|strContains|strEndsWith|strPadRight|appendFile|deleteFile|fileExists|hmacSha256|httpDelete|jsonPretty|seedRandom|stopServer|strIndexOf|strPadLeft|strReplace|dateParts|hexDecode|hexEncode|jsonParse|mapDelete|metricAdd|metricInc|randomHex|reFindAll|reReplace|readLines|strRepeat|writeFile|contains|httpPost|logDebug|logError|mapMerge|parseIso|readFile|readLine|strLower|strSlice|strSplit|strUpper|toNumber|toString|entries|gcStats|gcstats|httpGet|httpPut|indexOf|isAlive|isoTime|listDir|logInfo|logWarn|metrics|println|randInt|reSplit|reverse|strJoin|strTrim|upgrade|weakRef|append|assert|concat|filter|mapGet|mapHas|mapSet|random|reFind|reTest|reduce|sha256|sortBy|strLen|toBool|typeOf|values|debug|first|floor|mkdir|panic|print|range|regex|round|serve|sleep|slice|args|ceil|each|exit|find|keys|last|push|sign|sort|sqrt|uuid|abs|all|any|cos|env|exp|len|log|map|max|min|now|pop|pow|sin|sum|tan|pi)\\b(?=\\()"
+        }
+      ]
+    },
+    "calls": {
+      "patterns": [
+        {
+          "name": "entity.name.function.call.oberih",
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.oberih",
+          "match": "(\\+|\\-|\\*|/|==|!=|<=|>=|<|>|=|\\?|&&|\\|\\||!|=>|->)"
+        }
+      ]
+    }
+  }
+}

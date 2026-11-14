@@ -1,0 +1,27 @@
+enum Status {
+    Active,
+    Inactive,
+    Pending
+}
+
+fn describe(s: String) -> String {
+    return "статус: " + s
+}
+
+fn main() -> Number {
+    let current = Status.Active
+
+    print("Значення:", current)
+    print("Рівність з Active:", current == Status.Active)
+    print("Рівність з Pending:", current == Status.Pending)
+
+    let msg = match current {
+        Active => "система активна",
+        Inactive => "система вимкнена",
+        Pending => "очікування",
+        _ => "невідомо"
+    }
+    print("Через match:", msg)
+
+    return 0
+}

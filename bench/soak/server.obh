@@ -1,0 +1,158 @@
+// server.obh — сервер для soak-тесту (bench/soak/soak.py): тривале навантаження з
+// вимірюванням пам'яті, дескрипторів, потоків і лічильників на виході.
+//
+// Маршрути вправляють різні шляхи, де могли б ховатись витоки:
+//   /work    — алокації (списки, Map, рядки, JSON туди й назад)
+//   /echo    — тіла запитів різного розміру (до ліміту сервера)
+//   /fail    — помилка в обробнику -> 500
+//   /slow    — sleep у кооперативній задачі
+//   /resil   — resilient fn з retries/fallback/circuit breaker, що часто падає
+//   /log     — структуровані логи з полями
+//   /count   — власні метрики (кількість імен обмежена рантаймом)
+//   /metrics — текст Prometheus (metrics())
+//   /stats   — gcStats() у JSON (live-об'єктів має бути стабільно)
+//   /cycle   — ЦИКЛ посилань на кожен запит (відома межа: звільняється лише gcCollectCycles)
+//   /spawn   — spawn + join на кожен запит (відома межа: задачі не звільняються)
+//   /leak    — навмисна течу (лише для самоперевірки харнесу: OBERIH_SOAK_LEAK=1)
+//
+// Запуск вручну: OBERIH_SOAK_PORT=18090 oberih run bench/soak/server.obh
+
+struct Request {
+    method:  String,
+    path:    String,
+    query:   Map<String, String>,
+    headers: Map<String, String>,
+    body:    String,
+    remote:  String
+}
+
+struct Response {
+    status:  Number,
+    body:    String,
+    headers: Map<String, String>
+}
+
+fn modulo(a: Number, b: Number) -> Number {
+    return a - floor(a / b) * b
+}
+
+fn flaky(n: Number) -> Result<Number, String> {
+    if (modulo(n, 3) != 0) {
+        return Err("збій")
+    }
+    return Ok(n)
+}
+
+resilient fn guarded(n: Number) -> Result<Number, String>
+    deadline(2s)
+    retries(2)
+    circuitBreaker(failThreshold: 5, cooldown: 1s)
+    fallback(Ok(-1))
+{
+    return flaky(n)
+}
+
+fn work(n: Number) -> String {
+    let items = []
+    let i = 0
+    while (i < n) {
+        append(items, {"id": i, "name": "item-" + toString(i), "tags": ["a", "b", toString(modulo(i, 7))]})
+        i = i + 1
+    }
+    let text = jsonStringify(items)
+    let back = match jsonParse(text) {
+        Ok(v) => v,
+        Err(e) => []
+    }
+    return toString(len(text)) + ":" + toString(len(back))
+}
+
+fn makeCycle() -> Number {
+    let a = []
+    let b = []
+    append(a, b)
+    append(b, a)
+    return 1
+}
+
+fn child(n: Number) -> Number {
+    return n * 2
+}
+
+fn qnum(req: Request, key: String, dflt: Number) -> Number {
+    if (mapHas(req.query, key)) {
+        return toNumber(req.query[key])
+    }
+    return dflt
+}
+
+fn route(req: Request, sink: List<String>, leak: Bool) -> Response {
+    let p = req.path
+    if (p == "/health") {
+        return Response(200, "ok", {})
+    }
+    if (p == "/work") {
+        return Response(200, work(qnum(req, "n", 20)), {})
+    }
+    if (p == "/echo") {
+        return Response(200, toString(strLen(req.body)) + ":" + strSlice(req.body, 0, 16), {})
+    }
+    if (p == "/fail") {
+        panic("навмисна помилка обробника")
+    }
+    if (p == "/slow") {
+        sleep(qnum(req, "ms", 30))
+        return Response(200, "slow", {})
+    }
+    if (p == "/resil") {
+        let g = match guarded(qnum(req, "n", 1)) {
+            Ok(v) => v,
+            Err(e) => -2
+        }
+        return Response(200, toString(g), {})
+    }
+    if (p == "/log") {
+        logInfo("soak запит", {"path": p, "n": qnum(req, "n", 0), "who": req.remote})
+        return Response(200, "logged", {})
+    }
+    if (p == "/count") {
+        metricInc("soak_custom_total")
+        return Response(200, "counted", {})
+    }
+    if (p == "/metrics") {
+        return Response(200, metrics(), {"Content-Type": "text/plain; version=0.0.4"})
+    }
+    if (p == "/stats") {
+        let s = gcStats()
+        return Response(200, jsonStringify(s), {})
+    }
+    if (p == "/cycle") {
+        makeCycle()
+        return Response(200, "cycle", {})
+    }
+    if (p == "/spawn") {
+        let h = spawn child(21)
+        return Response(200, toString(h.join()), {})
+    }
+    if (p == "/leak" && leak) {
+        append(sink, strReplace("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "x", "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"))
+        return Response(200, "leaked", {})
+    }
+    return Response(404, "не знайдено", {})
+}
+
+fn main() -> Number {
+    let port = 18090
+    let rp = env("OBERIH_SOAK_PORT")
+    port = match rp {
+        Ok(v) => toNumber(v),
+        Err(e) => 18090
+    }
+    let leak = match env("OBERIH_SOAK_LEAK") {
+        Ok(v) => v == "1",
+        Err(e) => false
+    }
+    let sink = []
+    let r = serve(port, fn(req: Request) => route(req, sink, leak), "127.0.0.1")
+    return 0
+}

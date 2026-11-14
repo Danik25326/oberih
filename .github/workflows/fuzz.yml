@@ -1,0 +1,125 @@
+# Нічний фазинг: ті самі тести `fuzz_*` (src/fuzz_tests.rs), що й у звичайному CI, але з
+# кількістю випадків у сотні разів більшою й іншим зерном щоночі. Звичайний `cargo test`
+# проганяє їх із невеликою кількістю випадків (кілька секунд) на кожному коміті.
+#
+# Якщо знайдено збій: у логу є мінімізований відтворювач і зерно для повтору, а файли
+# відтворювачів вивантажуються як артефакт `fuzz-findings`.
+name: Fuzz
+
+on:
+  schedule:
+    - cron: "17 2 * * *"      # щодня о 02:17 UTC
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: "Випадків на кожну ціль"
+        default: "1000000"
+      seed:
+        description: "Зерно (порожньо = номер запуску)"
+        default: ""
+      force_failure:
+        description: "ТРЕНУВАННЯ: навмисно завершити з помилкою, щоб перевірити Summary і створення issue (true/false)"
+        default: "false"
+
+permissions:
+  contents: read
+  issues: write        # щоб при збої створити issue (інакше збій нічного прогону легко не помітити)
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Встановити Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Фазинг
+        if: ${{ inputs.force_failure != 'true' }}
+        env:
+          OBERIH_FUZZ_ITERS: ${{ inputs.iterations || '1000000' }}
+          OBERIH_FUZZ_SEED: ${{ inputs.seed || github.run_id }}
+          RUST_BACKTRACE: "0"
+          # Крах процесу (SIGSEGV, переповнення стека) не лишає мінімізованого відтворювача:
+          # тому перед кожним випадком вхід записується у файл, що потрапляє в артефакт.
+          OBERIH_FUZZ_TRACE: target/fuzz-findings/last-input
+        run: |
+          set -o pipefail
+          mkdir -p target/fuzz-findings
+          cargo test --release fuzz_ -- --nocapture 2>&1 | tee fuzz-output.txt
+
+      # Тренування сповіщень: імітує збій (формат як у справжнього), не запускаючи фазер.
+      # Вхід force_failure=true: після нього мають з'явитися Summary та issue із заголовком
+      # «[ТЕСТ] …».
+      - name: Навмисний збій (тренування)
+        if: ${{ inputs.force_failure == 'true' }}
+        run: |
+          mkdir -p target/fuzz-findings
+          {
+            echo "фаззинг \`тренування\`: 1 різних збоїв (навмисний збій: force_failure=true)"
+            echo '  [0] property: це ТЕСТ сповіщень, справжнього збою немає'
+            echo '      відтворювач (0 символів): ""'
+            echo "note: run with"
+          } | tee fuzz-output.txt
+          exit 1
+
+      # Збій нічного прогону не має лишатися непоміченим: підсумок у Summary + issue.
+      - name: Підсумок збоїв (Summary)
+        if: failure()
+        run: |
+          {
+            echo "## ❌ Фазинг знайшов збої"
+            echo
+            echo '```'
+            if grep -q '^фаззинг' fuzz-output.txt; then
+              sed -n '/^фаззинг/,/^note: run with/p' fuzz-output.txt | head -120
+            else
+              echo "Процес фазера аварійно завершився (крах або переповнення стека), мінімізатор не встиг."
+              tail -n 25 fuzz-output.txt
+              for f in target/fuzz-findings/last-input.*; do
+                [ -f "$f" ] && { echo; echo "Останній вхід перед крахом ($f), перші 400 байт:"; head -c 400 "$f"; echo; }
+              done
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Створити issue про збій
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OBERIH_FUZZ_ITERS: ${{ inputs.iterations || '1000000' }}
+          OBERIH_FUZZ_SEED: ${{ inputs.seed || github.run_id }}
+          TITLE_PREFIX: ${{ inputs.force_failure == 'true' && '[ТЕСТ] ' || '' }}
+        run: |
+          url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          {
+            echo "Фазинг знайшов збої (зерно \`$OBERIH_FUZZ_SEED\`, випадків на ціль: \`$OBERIH_FUZZ_ITERS\`)."
+            echo
+            echo "Запуск: $url"
+            echo
+            echo '```'
+            if grep -q '^фаззинг' fuzz-output.txt; then
+              sed -n '/^фаззинг/,/^note: run with/p' fuzz-output.txt | head -80
+            else
+              echo "Процес фазера аварійно завершився (крах або переповнення стека), мінімізатор не встиг."
+              tail -n 25 fuzz-output.txt
+              for f in target/fuzz-findings/last-input.*; do
+                [ -f "$f" ] && { echo; echo "Останній вхід перед крахом ($f), перші 400 байт:"; head -c 400 "$f"; echo; }
+              done
+            fi
+            echo '```'
+            echo
+            echo "Відтворювачі (мінімізовані та останній вхід перед крахом) — в артефакті \`fuzz-findings\` цього запуску."
+            echo "Повтор локально: \`OBERIH_FUZZ_SEED=<зерно> cargo test --release fuzz_\`."
+            echo "Після виправлення додайте відтворювач у \`fuzz_regressions_from_nightly_runs\` (src/fuzz_tests.rs)."
+          } > issue-body.md
+          bash .github/scripts/report-failure.sh fuzz-finding "${TITLE_PREFIX}Нічний фазинг знайшов збої ($(date -u +%F))" issue-body.md
+
+      - name: Відтворювачі знайдених збоїв
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: fuzz-findings
+          path: target/fuzz-findings/
+          if-no-files-found: ignore

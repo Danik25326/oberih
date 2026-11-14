@@ -1,0 +1,66 @@
+// 33_webhook_jwt.obh — типові бізнес-інтеграції на вбудованих примітивах:
+//   1) перевірка підпису вебхука (схема Stripe/GitHub: HMAC-SHA256 над `час.тіло`);
+//   2) видача й перевірка JWT HS256.
+// Усе на stdlib: sha256, hmacSha256, base64Url*, constantTimeEq, uuid. Нових залежностей немає.
+
+fn signWebhook(secret: String, ts: String, body: String) -> String {
+    return hmacSha256(secret, ts + "." + body)
+}
+
+// Порівнювати підпис через `==` НЕ можна: час відповіді видає, скільки символів збіглось.
+fn verifyWebhook(secret: String, ts: String, body: String, received: String) -> Bool {
+    return constantTimeEq(signWebhook(secret, ts, body), received)
+}
+
+fn jwtSign(secret: String, payloadJson: String) -> String {
+    let header = base64UrlEncode("{\"alg\":\"HS256\",\"typ\":\"JWT\"}")
+    let input = header + "." + base64UrlEncode(payloadJson)
+    let sig = match base64UrlEncodeHex(hmacSha256(secret, input)) {
+        Ok(s) => s,
+        Err(e) => ""
+    }
+    return input + "." + sig
+}
+
+// Повертає payload (JSON-текст), якщо підпис вірний, інакше Err.
+fn jwtVerify(secret: String, token: String) -> Result<String, String> {
+    let parts = strSplit(token, ".")
+    if (len(parts) != 3) {
+        return Err("токен має складатись із трьох частин")
+    }
+    let input = parts[0] + "." + parts[1]
+    let got = match base64UrlDecodeToHex(parts[2]) {
+        Ok(h) => h,
+        Err(e) => ""
+    }
+    if (!constantTimeEq(got, hmacSha256(secret, input))) {
+        return Err("підпис недійсний")
+    }
+    return base64UrlDecode(parts[1])
+}
+
+fn main() -> Number {
+    // --- вебхук ---
+    let secret = "whsec_test_secret"
+    let body = "{\"id\":\"evt_1\",\"amount\":2500}"
+    let sig = signWebhook(secret, "1700000000", body)
+    println("підпис вебхука: " + sig)
+    println("вірний підпис: " + toString(verifyWebhook(secret, "1700000000", body, sig)))
+    println("підроблене тіло: " + toString(verifyWebhook(secret, "1700000000", "{\"id\":\"evt_1\",\"amount\":9999}", sig)))
+
+    // --- JWT ---
+    let token = jwtSign("your-256-bit-secret", "{\"sub\":\"1234567890\",\"name\":\"John Doe\",\"iat\":1516239022}")
+    println("jwt: " + token)
+    match jwtVerify("your-256-bit-secret", token) {
+        Ok(p) => println("payload: " + p),
+        Err(e) => println("помилка: " + e)
+    }
+    match jwtVerify("wrong-secret", token) {
+        Ok(p) => println("ПРИЙНЯТО (помилка!): " + p),
+        Err(e) => println("чужий ключ: " + e)
+    }
+
+    // --- ідентифікатор ---
+    println("uuid v4, 36 символів: " + toString(len(uuid()) == 36))
+    return 0
+}

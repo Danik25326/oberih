@@ -1,0 +1,74 @@
+// 31_tls_verify.obh — перевірка безпеки: HTTPS мусить ВІДХИЛЯТИ погані сертифікати.
+//
+// Звертається до публічних тестових серверів badssl.com, чиї сертифікати свідомо некоректні:
+//   expired.badssl.com        — термін дії сертифіката минув
+//   wrong.host.badssl.com     — сертифікат виданий на інше ім'я
+//   self-signed.badssl.com    — самопідписаний
+//   untrusted-root.badssl.com — ланцюг веде до недовіреного кореня
+// Якщо ХОЧА Б ОДИН запит буде прийнято — програма завершується з кодом 1 (діра в безпеці).
+//
+// Це інтеграційна перевірка на реальній мережі, а badssl.com — чужа служба: вона може скидати
+// з'єднання або мовчати. Мережевий збій НЕ є проваленою перевіркою безпеки, тому такі хости
+// лише пропускаються (ПРОПУЩЕНО), а код 1 дає тільки прийнятий поганий сертифікат.
+// Надійний (локальний, без мережі) доказ — Rust-тести tls_* у src/http_client.rs: власний CA,
+// локальний TLS-сервер, парний контроль «довірений приймається».
+
+// Повертає: 0 — відхилено (добре), 1 — ПРИЙНЯТО (діра), 2 — пропущено через мережу.
+fn check(host: String) -> Number {
+    let r = httpGet("https://" + host, 15)
+    let verdict = match r {
+        Ok(data) => "ПРИЙНЯТО",
+        Err(e) => toString(e)
+    }
+    if (verdict == "ПРИЙНЯТО") {
+        println("НЕБЕЗПЕЧНО: " + host + " — некоректний сертифікат ПРИЙНЯТО")
+        return 1
+    }
+    if (strContains(strLower(verdict), "certificate")) {
+        println("ok: " + host + " відхилено: " + verdict)
+        return 0
+    }
+    println("ПРОПУЩЕНО: " + host + " — мережева помилка, не пов'язана із сертифікатом: " + verdict)
+    return 2
+}
+
+fn control() -> Number {
+    let r = httpGet("https://example.com", 15)
+    let verdict = match r {
+        Ok(data) => "ok",
+        Err(e) => toString(e)
+    }
+    if (verdict == "ok") {
+        println("контроль: https://example.com прийнято (ok)")
+        return 0
+    }
+    println("ПРОПУЩЕНО: контроль https://example.com недоступний (" + verdict + ")")
+    return 0
+}
+
+fn tally(code: Number, counts: Map<String, Number>) -> Number {
+    if (code == 0) { counts["rejected"] = counts["rejected"] + 1 }
+    if (code == 1) { counts["accepted"] = counts["accepted"] + 1 }
+    if (code == 2) { counts["skipped"] = counts["skipped"] + 1 }
+    return 0
+}
+
+fn main() -> Number {
+    control()
+    let counts: Map<String, Number> = {"rejected": 0, "accepted": 0, "skipped": 0}
+    tally(check("expired.badssl.com"), counts)
+    tally(check("wrong.host.badssl.com"), counts)
+    tally(check("self-signed.badssl.com"), counts)
+    tally(check("untrusted-root.badssl.com"), counts)
+    println("підсумок: відхилено " + toString(counts["rejected"]) + ", ПРИЙНЯТО " + toString(counts["accepted"]) + ", пропущено " + toString(counts["skipped"]))
+    if (counts["accepted"] > 0) {
+        println("ПРОВАЛ перевірки TLS: поганий сертифікат прийнято")
+        exit(1)
+    }
+    if (counts["rejected"] == 0) {
+        println("УВАГА: жоден хост не вдалось перевірити (немає мережі?) — безпеку доводять лише Rust-тести tls_*")
+        return 0
+    }
+    println("TLS коректно відхиляє погані сертифікати")
+    return 0
+}

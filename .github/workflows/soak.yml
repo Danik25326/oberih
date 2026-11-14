@@ -1,0 +1,101 @@
+# Soak-тест: тривале навантаження на HTTP-сервер з вимірюванням витоків (bench/soak/soak.py).
+#
+#  * quick — на кожен push/PR, що зачіпає рантайм: ~4 хв. Ловить ГРУБІ витоки (від ≈0,5 КБ
+#    на запит; саме так було знайдено витік реєстру збирача циклів) і перевіряє сам харнес
+#    (прогін із навмисною течею МАЄ бути виявлений).
+#  * long — раз на тиждень та вручну: за замовчуванням 5 год (ліміт hosted-runner — 6 год на
+#    job, тож «добовий» прогін на безкоштовних runner'ах неможливий; для 24 год використайте
+#    self-hosted runner і задайте duration=86400). Ловить повільні витоки й деградацію.
+#
+# Результати (JSON, CSV зі знімками, хвіст логу сервера) завантажуються як артефакти.
+name: Soak
+
+on:
+  push:
+    branches: [main]
+    paths: ["src/**", "bench/soak/**", "Cargo.toml", "Cargo.lock", ".github/workflows/soak.yml"]
+  pull_request:
+    paths: ["src/**", "bench/soak/**", "Cargo.toml", "Cargo.lock", ".github/workflows/soak.yml"]
+  schedule:
+    - cron: "23 3 * * 0"        # щонеділі о 03:23 UTC
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Тривалість навантаження, с (5 год = 18000; на hosted-runner не більше ~20000)"
+        default: "18000"
+      scenario:
+        description: "steady | known | leak-selftest"
+        default: "steady"
+
+permissions:
+  contents: read
+  issues: write        # щоб при збої довгого прогону створити issue
+
+jobs:
+  quick:
+    if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Збірка
+        run: cargo build --release
+
+      # Перевірка самого харнеса: сервер навмисно тече, харнес зобов'язаний це виявити.
+      - name: Самоперевірка харнеса (навмисна течa має бути виявлена)
+        run: python3 bench/soak/soak.py --scenario leak-selftest --duration 120 --out soak-selftest.json --csv soak-selftest.csv --server-log soak-selftest.log --port 18600
+
+      - name: Soak (steady, 120 с)
+        run: python3 bench/soak/soak.py --scenario steady --duration 120 --out soak-steady.json --csv soak-steady.csv --server-log soak-steady.log --port 18601
+
+      - name: Артефакти
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: soak-quick
+          path: |
+            soak-*.json
+            soak-*.csv
+            soak-*.log
+          if-no-files-found: ignore
+
+  long:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 345         # ліміт hosted-runner — 360 хв
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Збірка
+        run: cargo build --release
+      - name: Soak
+        env:
+          DURATION: ${{ inputs.duration || '18000' }}
+          SCENARIO: ${{ inputs.scenario || 'steady' }}
+        run: python3 bench/soak/soak.py --scenario "$SCENARIO" --duration "$DURATION" --sample-interval 30 --out soak-long.json --csv soak-long.csv --server-log soak-long.log --port 18700
+      - name: Створити issue про збій
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SCENARIO: ${{ inputs.scenario || 'steady' }}
+        run: |
+          url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          {
+            echo "Довгий soak-тест (сценарій \`${SCENARIO:-steady}\`) завершився з помилкою."
+            echo
+            echo "Запуск і таблиця перевірок (Summary): $url"
+            echo "JSON, CSV зі знімками й лог сервера — в артефакті \`soak-long\`."
+          } > issue-body.md
+          bash .github/scripts/report-failure.sh soak-finding "Довгий soak-тест не пройдено ($(date -u +%F))" issue-body.md
+
+      - name: Артефакти
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: soak-long
+          path: |
+            soak-long.json
+            soak-long.csv
+            soak-long.log
+          if-no-files-found: ignore

@@ -1,0 +1,52 @@
+{
+  "name": "oberih-language",
+  "displayName": "Oberih Language Support",
+  "description": "Підсвітка синтаксису й language server (діагностика, форматування, автодоповнення, hover, перехід до визначення) для мови Oberih (.obh)",
+  "version": "0.3.0",
+  "publisher": "oberih",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Formatters"
+  ],
+  "activationEvents": [],
+  "main": "./extension.js",
+  "dependencies": {
+    "vscode-languageclient": "^8.1.0"
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "oberih",
+        "aliases": [
+          "Oberih",
+          "oberih"
+        ],
+        "extensions": [
+          ".obh"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "oberih",
+        "scopeName": "source.oberih",
+        "path": "./syntaxes/oberih.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Oberih",
+      "properties": {
+        "oberih.serverPath": {
+          "type": "string",
+          "default": "oberih",
+          "description": "Шлях до виконуваного файлу `oberih` (запускається як `oberih lsp`). Потрібен Oberih ≥ 0.3 зі підкомандою `lsp`."
+        }
+      }
+    }
+  }
+}

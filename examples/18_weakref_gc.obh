@@ -1,0 +1,31 @@
+// 18_weakref_gc.obh — демонстрація WeakRef і GC
+//
+// WeakRef вирішує проблему циклічних посилань:
+//   Без WeakRef: A тримає B, B тримає A -> нікого не звільняє GC
+//   З WeakRef:   A тримає B сильно, B тримає A слабко -> GC звільняє коли A зникає
+
+fn main() -> Number {
+    // Створюємо список
+    let items = ["alpha", "beta", "gamma"]
+
+    // Сильне посилання — утримує список живим
+    println("Список: " + toString(len(items)) + " елементів")
+
+    // Слабке посилання — не утримує живим
+    let weak = weakRef(items)
+    println("WeakRef живий: " + toString(isAlive(weak)))
+
+    // Оновлюємо через слабке посилання
+    let result = upgrade(weak)
+    let msg = match result {
+        Ok(list) => "Отримали список з " + toString(len(list)) + " елементів",
+        Err(e)   => "Помилка: " + e,
+        _        => "невідомо"
+    }
+    println(msg)
+
+    // GC статистика
+    gcstats()
+
+    return 0
+}

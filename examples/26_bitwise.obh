@@ -1,0 +1,53 @@
+// 26_bitwise.obh — бітові оператори: & | ^ ~ << >>
+//
+// Пріоритет (як у Python, а не як у C): | ^ & тісніші за порівняння,
+// але слабші за зсуви. `1 | 2 == 3` означає `(1 | 2) == 3`, а не
+// `1 | (2 == 3)`. Операнди — цілі числа в межах ±2^53.
+
+fn hasFlag(flags: Number, bit: Number) -> Bool {
+    return (flags & (1 << bit)) != 0
+}
+
+fn setFlag(flags: Number, bit: Number) -> Number {
+    return flags | (1 << bit)
+}
+
+fn toHex(n: Number) -> String {
+    let digits = "0123456789abcdef"
+    if (n == 0) { return "0" }
+    let out = ""
+    let x = n
+    while (x > 0) {
+        let d = x & 15
+        out = strSlice(digits, d, d + 1) + out
+        x = x >> 4
+    }
+    return out
+}
+
+fn main() -> Number {
+    println("=== Базові операції ===")
+    println("6 & 3  =", 6 & 3)
+    println("6 | 1  =", 6 | 1)
+    println("6 ^ 5  =", 6 ^ 5)
+    println("~0     =", ~0)
+    println("1 << 8 =", 1 << 8)
+    println("256 >> 4 =", 256 >> 4)
+
+    println("\n=== Прапорці (flags) ===")
+    let flags = 0
+    flags = setFlag(flags, 0)
+    flags = setFlag(flags, 3)
+    println("flags =", flags, "(двійково мало б бути 1001)")
+    println("біт 0:", hasFlag(flags, 0), "| біт 1:", hasFlag(flags, 1), "| біт 3:", hasFlag(flags, 3))
+
+    println("\n=== HEX через зсуви ===")
+    println("255 ->", toHex(255))
+    println("4096 ->", toHex(4096))
+
+    println("\n=== Пріоритет ===")
+    println("1 | 2 == 3   ->", 1 | 2 == 3, "  // (1|2)==3, НЕ 1|(2==3)")
+    println("2 << 1 + 1   ->", 2 << 1 + 1, "  // 2<<(1+1), зсув слабший за +")
+
+    return 0
+}
